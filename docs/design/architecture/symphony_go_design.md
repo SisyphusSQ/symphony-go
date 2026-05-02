@@ -436,27 +436,27 @@ workspace directory name 必须 sanitize
 | TicketId | 主题 | 目标 | 验收 |
 |---|---|---|---|
 | `TOO-115` | Charter / Conformance | 创建 Go port charter 和 conformance matrix | `docs/go-port/CONFORMANCE.md` 完成，并对齐 `SPEC.md` Section 18 |
-| `TOO-116` | CLI skeleton | CLI skeleton、workflow path selection、validate surface | CLI path 选择、help、validate 行为可测试 |
-| `TOO-117` | Workflow loader | `WORKFLOW.md` loader 和 prompt body parsing | front matter、非法 YAML、空 body、happy path 测试 |
-| `TOO-118` | Workflow reload | Dynamic workflow watch、reload、config re-apply | 文件变更、非法 reload、future dispatch 行为测试 |
-| `TOO-119` | Typed config | typed config layer、defaults、env resolution、validation | 默认值、env var、路径归一化、非法配置测试 |
-| `TOO-120` | Workspace | workspace manager、path safety、per-issue directories | path containment、sanitize、existing/new workspace 测试 |
-| `TOO-121` | Hooks | lifecycle hooks with timeout handling | cwd、success/failure、timeout、`after_create` 测试 |
-| `TOO-122` | Linear read adapter | Linear tracker read adapter | fake GraphQL server 覆盖 candidate、refresh、terminal fetch |
-| `TOO-123` | Dispatch policy | issue eligibility、blockers、sorting、repo label routing | eligibility、blocker、排序、`issue_filter` 测试 |
-| `TOO-124` | Orchestrator loop | orchestrator poll、dispatch、concurrency loop | fake tracker + fake workspace/hooks/runner 调度测试 |
-| `TOO-125` | Retry / Reconcile | retry queue、reconciliation、terminal workspace cleanup | fake clock/tracker/workspace 覆盖 retry、stop、cleanup |
-| `TOO-126` | Codex client | Codex app-server JSONL client | fake app-server binary 覆盖 success、malformed JSON、timeout |
-| `TOO-127` | Agent runner | prompt rendering、attempts、max turns、timeouts | strict prompt render、attempt、cwd、timeout 测试 |
-| `TOO-128` | Linear GraphQL tool | raw `linear_graphql` agent tool | structured success/error payload 和 fake Linear 测试 |
-| `TOO-129` | Observability | structured logs 和 status snapshot | `issue_id`、`issue_identifier`、`session_id` 等字段测试 |
-| `TOO-130` | Fake E2E | fake Linear + fake Codex E2E profile | fake E2E happy path 和代表性失败路径完整跑通 |
-| `TOO-131` | Real dogfood | real Linear/Codex dogfood profile | 真实低风险 issue 在受控配置下走到 Human Review，或明确阻塞原因 |
-| `TOO-132` | Durable state | durable SQLite state store 和 crash recovery | runs、retry、session/event 持久化与重启恢复测试 |
-| `TOO-133` | Operator controls | operator controls、HTTP endpoints、health/readiness/metrics | status、pause/resume/drain、cancel/retry、port precedence 测试 |
-| `TOO-134` | Production safety | secret redaction、audit log、sandbox/cost guardrails | redaction、audit、limit enforcement 测试 |
-| `TOO-135` | Linear writes | typed Linear write APIs for comments/state transitions | Workpad comment create/update、state transition、error case 测试 |
-| `TOO-136` | Cutover | cutover runbook 和 Go-over-Elixir replacement gate | cutover go/no-go、rollback、post-cutover monitoring 标准明确 |
+| `TOO-116` | CLI 骨架 | CLI 骨架、工作流路径选择与 validate 能力 | CLI 路径选择、help、validate 行为可测试 |
+| `TOO-117` | 工作流加载 | `WORKFLOW.md` 加载器与 prompt body 解析 | front matter、非法 YAML、空 body、happy path 测试 |
+| `TOO-118` | 工作流重载 | 工作流动态监听、重载与配置重应用 | 文件变更、非法 reload、future dispatch 行为测试 |
+| `TOO-119` | 类型化配置 | 类型化配置层、默认值、环境变量解析与校验 | 默认值、env var、路径归一化、非法配置测试 |
+| `TOO-120` | 工作区管理 | workspace 管理器、路径安全与 issue 隔离目录 | path containment、sanitize、existing/new workspace 测试 |
+| `TOO-121` | 生命周期 hooks | 生命周期 hooks 与超时处理 | cwd、success/failure、timeout、`after_create` 测试 |
+| `TOO-122` | Linear 只读适配 | Linear tracker 只读适配器 | fake GraphQL server 覆盖 candidate、refresh、terminal fetch |
+| `TOO-123` | 调度策略 | issue 可执行性、阻塞关系、排序与 repo label routing | eligibility、blocker、排序、`issue_filter` 测试 |
+| `TOO-124` | 编排循环 | orchestrator 轮询、调度与并发循环 | fake tracker + fake workspace/hooks/runner 调度测试 |
+| `TOO-125` | 重试与状态校准 | retry queue、状态校准与终态 workspace 清理 | fake clock/tracker/workspace 覆盖 retry、stop、cleanup |
+| `TOO-126` | Codex 客户端 | Codex app-server JSONL 客户端 | fake app-server binary 覆盖 success、malformed JSON、timeout |
+| `TOO-127` | Agent runner | Agent runner 的 prompt 渲染、attempt、max turns 与超时 | strict prompt render、attempt、cwd、timeout 测试 |
+| `TOO-128` | Linear GraphQL 工具 | 原始 `linear_graphql` agent 工具 | structured success/error payload 和 fake Linear 测试 |
+| `TOO-129` | 可观测性 | 可观测性基线：结构化日志与状态快照 | `issue_id`、`issue_identifier`、`session_id` 等字段测试 |
+| `TOO-130` | fake E2E | fake Linear + fake Codex 的 E2E 验证 profile | fake E2E happy path 和代表性失败路径完整跑通 |
+| `TOO-131` | 真实 dogfood | 真实 Linear/Codex dogfood profile | 真实低风险 issue 在受控配置下走到 Human Review，或明确阻塞原因 |
+| `TOO-132` | 持久化状态 | SQLite 持久化状态存储与崩溃恢复 | runs、retry、session/event 持久化与重启恢复测试 |
+| `TOO-133` | 运维控制 | 运维控制、HTTP 端点、健康检查与 metrics | status、pause/resume/drain、cancel/retry、port precedence 测试 |
+| `TOO-134` | 生产安全 | 生产安全：密钥脱敏、审计日志与成本护栏 | redaction、audit、limit enforcement 测试 |
+| `TOO-135` | Linear 写操作 | Linear 评论与状态流转的类型化写 API | Workpad comment create/update、state transition、error case 测试 |
+| `TOO-136` | Cutover | Go 替代 Elixir 的 cutover runbook 与准入 gate | cutover go/no-go、rollback、post-cutover monitoring 标准明确 |
 
 ---
 
