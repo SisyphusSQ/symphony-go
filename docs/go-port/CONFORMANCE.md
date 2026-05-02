@@ -81,7 +81,7 @@ can claim core conformance.
 | SPEC 18.1 item | Validation profile | Design / package route | Current status | Current evidence and owner |
 | --- | --- | --- | --- | --- |
 | Workflow path selection supports explicit runtime path and cwd default | Section 17.1, 17.7 | `cmd/symphony`, `internal/workflow` | `implemented` | `TOO-116` covers positional path, `--workflow`, cwd default `./WORKFLOW.md`, duplicate path rejection, missing path errors, and directory path errors with deterministic CLI/workflow tests. Full orchestrator runtime remains outside this row. |
-| `WORKFLOW.md` loader with YAML front matter + prompt body split | Section 17.1 | `internal/workflow` | `not_started` | Package exists, but loader/parser behavior is not implemented; planned for `TOO-117`. |
+| `WORKFLOW.md` loader with YAML front matter + prompt body split | Section 17.1 | `internal/workflow` | `implemented` | `TOO-117` adds reusable `internal/workflow.Load` / `Parse` behavior with deterministic tests for happy path, missing front matter, invalid YAML, non-map front matter, empty prompt body, and unterminated front matter diagnostics. |
 | Typed config layer with defaults and `$` resolution | Section 17.1 | `internal/config` | `partial` | Typed structs exist; defaults, env/path resolution, validation, and tests remain for `TOO-119`. |
 | Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt | Section 17.1, 6.2 | `internal/workflow`, `internal/config`, `internal/orchestrator` | `not_started` | Planned for `TOO-118`. |
 | Polling orchestrator with single-authority mutable state | Section 17.4 | `internal/orchestrator` | `partial` | Lifecycle status constants exist; poll/dispatch ownership is not implemented; planned for `TOO-124`. |
@@ -138,7 +138,7 @@ the Go port as the production replacement.
 | Orphan workspace reconciliation and terminal cleanup hardening | Architecture Sections 7, 14 | `deferred` | Starts with `TOO-125`; durable recovery in `TOO-132`. |
 | Safe sandbox defaults and scoped credentials | Architecture Section 8 | `documented` | Defaults documented in `WORKFLOW.md`; hardening/redaction planned for `TOO-134`. |
 | Secret redaction, audit log, sandbox/cost guardrails | Architecture Sections 8, 15 | `deferred` | Planned for `TOO-134`. |
-| Workflow validation command | Architecture Sections 6.2, 13 | `partial` | `TOO-116` makes `symphony validate [workflow]` a successful readable-file startup preflight with CLI tests; full YAML/front matter parsing and typed config validation remain planned for `TOO-117` / `TOO-119`. |
+| Workflow validation command | Architecture Sections 6.2, 13 | `partial` | `TOO-116` makes `symphony validate [workflow]` a successful readable-file startup preflight with CLI tests; `TOO-117` adds reusable YAML/front matter parsing in `internal/workflow`, while CLI integration and typed config validation remain planned for later config/runtime slices. |
 | Health/readiness/metrics and operator controls | Architecture Sections 6.2, 13 | `deferred` | Planned for `TOO-133`. |
 | Pause/resume/drain/cancel/retry command behavior | Architecture Section 13 | `partial` | CLI command surface exists; runtime behavior planned for `TOO-133`. |
 | Per-project concurrency, per-issue timeout, max turns, and cost limits | Architecture Sections 6.2, 8, 13 | `partial` | Some config fields exist; policy and enforcement are later implementation work. |
