@@ -35,16 +35,27 @@ type Definition struct {
 
 // Load reads and parses a workflow definition from path.
 func Load(path string) (Definition, error) {
+	definition, _, err := LoadBytes(path)
+	return definition, err
+}
+
+// LoadBytes reads and parses a workflow definition from path while returning
+// the raw file bytes used for content-change detection.
+func LoadBytes(path string) (Definition, []byte, error) {
 	if err := RequireReadable(path); err != nil {
-		return Definition{}, err
+		return Definition{}, nil, err
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Definition{}, fmt.Errorf("workflow %q cannot be read: %w", path, err)
+		return Definition{}, nil, fmt.Errorf("workflow %q cannot be read: %w", path, err)
 	}
 
-	return Parse(path, string(data))
+	definition, err := Parse(path, string(data))
+	if err != nil {
+		return Definition{}, data, err
+	}
+	return definition, data, nil
 }
 
 // Parse parses a workflow definition from content while using path in diagnostics.

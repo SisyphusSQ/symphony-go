@@ -101,6 +101,17 @@ type Codex struct {
 	TurnSandboxPolicy map[string]any
 }
 
+// Clone returns a copy of Config safe for callers to inspect without mutating
+// the internally retained runtime snapshot.
+func (cfg Config) Clone() Config {
+	cloned := cfg
+	cloned.Tracker.ActiveStates = cloneStrings(cfg.Tracker.ActiveStates)
+	cloned.Tracker.TerminalStates = cloneStrings(cfg.Tracker.TerminalStates)
+	cloned.Agent.MaxConcurrentAgentsByState = cloneIntMap(cfg.Agent.MaxConcurrentAgentsByState)
+	cloned.Codex.TurnSandboxPolicy = cloneMap(cfg.Codex.TurnSandboxPolicy)
+	return cloned
+}
+
 // FieldError records one invalid config field.
 type FieldError struct {
 	Field string
@@ -746,6 +757,29 @@ func cloneStrings(values []string) []string {
 
 func cloneMap(values map[string]any) map[string]any {
 	result := make(map[string]any, len(values))
+	for key, value := range values {
+		result[key] = cloneAny(value)
+	}
+	return result
+}
+
+func cloneAny(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneMap(typed)
+	case []any:
+		result := make([]any, len(typed))
+		for i, item := range typed {
+			result[i] = cloneAny(item)
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func cloneIntMap(values map[string]int) map[string]int {
+	result := make(map[string]int, len(values))
 	for key, value := range values {
 		result[key] = value
 	}
