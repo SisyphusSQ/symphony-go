@@ -1,0 +1,4 @@
+interface:
+  display_name: "symphony-go 发布"
+  short_description: "维护 symphony-go 版本、发布和 changeLog 收口"
+  default_prompt: "使用 $symphony-go-version-release 检查版本发布影响，先分类变更，并在流程完成前回写 changeLog。"
