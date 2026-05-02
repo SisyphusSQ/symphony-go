@@ -59,6 +59,14 @@ python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_re
   --issue <ISSUE-ID> --type note --text "<简洁变更说明>" --write --json
 ```
 
+检查当前变更是否包含 changeLog 回写：
+
+```bash
+git diff --name-only origin/main...HEAD \
+  | python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py changelog-gate \
+      --repo . --changed-files-from - --json
+```
+
 真实 release 时归档：
 
 ```bash

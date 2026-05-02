@@ -307,6 +307,8 @@ event_ingest:
 ## Writeback Summary
 - `targets`: `Linear WEB-121`、必要 repo docs
 - `linear_feedback_location`: `WEB-121 progress comment`
+- `changelog_action`: `updated Unreleased`
+- `changelog_version`: `Unreleased`
 - `status`: `pending`
 - `notes`: 结果面默认写回 Linear
 

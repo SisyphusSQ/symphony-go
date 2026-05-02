@@ -202,13 +202,33 @@ def normalize_changed(paths: list[str]) -> list[str]:
     return normalized
 
 
+def load_changed_files(paths: list[str], changed_files_from: str | None = None) -> list[str]:
+    combined = list(paths)
+    if changed_files_from:
+        if changed_files_from == "-":
+            data = sys.stdin.read()
+        else:
+            data = Path(changed_files_from).read_text(encoding="utf-8")
+        combined.extend(data.splitlines())
+    return normalize_changed(combined)
+
+
+def has_changelog_change(paths: list[str]) -> bool:
+    return any(
+        p in CHANGELOG_CANDIDATES
+        or p.endswith("/ChangeLog.md")
+        or p.endswith("/changeLog.md")
+        for p in paths
+    )
+
+
 def classify(paths: list[str], issue: str | None = None) -> dict[str, Any]:
     changed = normalize_changed(paths)
     joined = "\n".join(changed)
     classification = "issue-only"
     reasons: list[str] = []
 
-    if any(p in CHANGELOG_CANDIDATES or p.endswith("/ChangeLog.md") or p.endswith("/changeLog.md") for p in changed):
+    if has_changelog_change(changed):
         classification = "changelog-only"
         reasons.append("changeLog file changed")
 
@@ -231,6 +251,34 @@ def classify(paths: list[str], issue: str | None = None) -> dict[str, Any]:
         "changed_files": changed,
         "requires_changelog_before_done": True,
         "reasons": reasons or ["no release-sensitive files detected"],
+    }
+
+
+def changelog_gate(repo: Path, paths: list[str], issue: str | None = None) -> dict[str, Any]:
+    changed = normalize_changed(paths)
+    classification = classify(changed, issue)
+    changelog = rel(repo, find_changelog(repo))
+
+    if not changed:
+        status = "skipped"
+        message = "no changed files detected"
+    elif has_changelog_change(changed):
+        status = "pass"
+        message = "changeLog file is present in changed files"
+    else:
+        status = "fail"
+        message = "ChangeLog.md/changeLog.md is missing from changed files"
+
+    return {
+        "repo": str(repo),
+        "status": status,
+        "message": message,
+        "issue": issue or "",
+        "changelog": changelog,
+        "changed_files": changed,
+        "classification": classification["classification"],
+        "requires_changelog_before_done": classification["requires_changelog_before_done"],
+        "reasons": classification["reasons"],
     }
 
 
@@ -296,6 +344,8 @@ def run_self_test() -> dict[str, Any]:
         write_text(repo / "Makefile", "harness-check:\n\ntest:\n\nbuild:\n")
         before = check_repo(repo)
         add = changelog_add(repo, "SYM-1", "note", "增加 release skill 自测条目。", True)
+        gate_fail = changelog_gate(repo, ["cmd/symphony/main.go"], "SYM-2")
+        gate_pass = changelog_gate(repo, ["cmd/symphony/main.go", "ChangeLog.md"], "SYM-2")
         archive = release_archive(repo, "v0.1.0", "20260502", True)
         after = check_repo(repo)
         return {
@@ -303,6 +353,8 @@ def run_self_test() -> dict[str, Any]:
             "before_status": before["status"],
             "after_status": after["status"],
             "add": add,
+            "gate_fail": gate_fail,
+            "gate_pass": gate_pass,
             "archive": archive,
         }
     finally:
@@ -322,7 +374,15 @@ def build_parser() -> argparse.ArgumentParser:
     classify_cmd.add_argument("--repo", required=True)
     classify_cmd.add_argument("--issue")
     classify_cmd.add_argument("--changed-files", nargs="*", default=[])
+    classify_cmd.add_argument("--changed-files-from")
     classify_cmd.add_argument("--json", action="store_true")
+
+    gate = sub.add_parser("changelog-gate")
+    gate.add_argument("--repo", required=True)
+    gate.add_argument("--issue")
+    gate.add_argument("--changed-files", nargs="*", default=[])
+    gate.add_argument("--changed-files-from")
+    gate.add_argument("--json", action="store_true")
 
     add = sub.add_parser("changelog-add")
     add.add_argument("--repo", required=True)
@@ -355,7 +415,14 @@ def main(argv: list[str]) -> int:
     if args.command == "check":
         emit(check_repo(repo), args.json)
     elif args.command == "classify":
-        emit(classify(args.changed_files, args.issue), args.json)
+        changed = load_changed_files(args.changed_files, args.changed_files_from)
+        emit(classify(changed, args.issue), args.json)
+    elif args.command == "changelog-gate":
+        changed = load_changed_files(args.changed_files, args.changed_files_from)
+        result = changelog_gate(repo, changed, args.issue)
+        emit(result, args.json)
+        if result["status"] == "fail":
+            return 1
     elif args.command == "changelog-add":
         emit(changelog_add(repo, args.issue, args.type, args.text, args.write), args.json)
     elif args.command == "release-archive":

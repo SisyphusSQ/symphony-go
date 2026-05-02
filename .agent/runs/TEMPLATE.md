@@ -18,6 +18,8 @@
 - `verification_summary`:
 - `review_summary`:
 - `writeback_summary`:
+- `changelog_action`:
+- `changelog_version`:
 - `residual_risks`:
 - `followups`:
 - `owner_agents`:

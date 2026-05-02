@@ -312,12 +312,13 @@ Additional constraints: <CONSTRAINTS>
 1. 先执行本地验证并记录结果。
 2. 按 findings-first 做 code review。
 3. 若 review 有阻塞项，先修复再继续。
-4. 同步更新相关计划、文档和结果摘要。
+4. 同步更新相关计划、文档、ChangeLog 和结果摘要；若确实不更新 ChangeLog，必须写明原因。
 5. 准备 PR / MR，描述至少包含：
    - 本次范围
    - 本次不纳入
    - 验证结果
    - 文档同步点
+   - ChangeLog：`changelog_action` / `changelog_version`
    - 遗留风险
 ```
 
@@ -340,7 +341,7 @@ Additional constraints: <CONSTRAINTS>
 
 执行要求：
 1. 合并前再次确认当前卡的验证结果和阻塞项状态。
-2. 合并后优先回写结果摘要到 Linear，再按需同步到 PR / MR 和 repo 文档。
+2. 合并后优先回写结果摘要到 Linear，再按需同步到 PR / MR 和 repo 文档；收口摘要必须包含 `changelog_action` 和 `changelog_version`。
 3. 若当前卡已满足闭环条件，则将状态切到 Done。
 4. 本地切回主分支并更新。
 ```

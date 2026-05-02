@@ -69,6 +69,14 @@ if [[ -z "$blocking_findings" ]]; then
   exit 2
 fi
 
+for field in changelog_action changelog_version; do
+  value="$(extract_section_field "$plan_path" "## Writeback Summary" "$field" || true)"
+  if [[ -z "$value" ]]; then
+    echo "review gate: missing $field in $plan_path" >&2
+    exit 2
+  fi
+done
+
 normalized="$(
   printf '%s' "$blocking_findings" \
     | tr '[:upper:]' '[:lower:]' \

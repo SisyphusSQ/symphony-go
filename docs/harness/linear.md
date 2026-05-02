@@ -233,6 +233,8 @@
 - 回写 `verification_summary`
 - 回写 `review_summary`
 - 回写 `writeback_summary`
+- 回写 `changelog_action`
+- 回写 `changelog_version`
 - 回写 `residual_risks`
 - 回写下一步 `next_action`
 
@@ -314,6 +316,8 @@
 - `verification_summary`: <commands and result>
 - `review_summary`: <blocking findings or none>
 - `writeback_summary`: <where the facts were written>
+- `changelog_action`: <updated Unreleased / archived version / not-applicable with reason>
+- `changelog_version`: <Unreleased / version / not-applicable>
 - `residual_risks`: <remaining risk or none>
 - `recovery_point`: <commit/branch/Linear Doc/workpad pointer>
 - `next_action`: <human review / merge / follow-up / none>

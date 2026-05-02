@@ -59,6 +59,7 @@ Maintenance loop 默认扫描本文件，用来判断项目规则是否仍停留
 | `ARCH-001` | `architecture` | 示例：填写本项目真实架构边界 | `AGENTS.md` / design docs | linter / script / review | `make lint-check` / `make project-check` | `documented` | `maintenance_candidate` | 初始化后替换示例，不要保留空规则 |
 | `CONTRACT-001` | `contract` | 示例：填写接口或 contract 同步规则 | contract docs | script / test / review | `make contract-check` | `planned` | `human_decision_required` | 没有命令前不能标记为 `enforced` |
 | `VERIFY-001` | `verification` | 示例：填写本项目稳定验证矩阵 | README / Makefile | test / E2E | `make verify` | `documented` | `rule_promotion_candidate` | 若命令真实存在且会失败，可改为 `enforced` |
+| `DOCS-001` | `docs` | issue / PR closeout 必须回写 `ChangeLog.md` 的 `Unreleased`，并在结果摘要记录 `changelog_action` 与 `changelog_version` | `.agent/skills/symphony-go-version-release/SKILL.md` | harness gate | `make harness-check` | `enforced` | `maintenance_candidate` | gate 会检查当前分支或工作区变更是否包含 `ChangeLog.md` / `changeLog.md` |
 
 ## `project-check` 挂载协议
 

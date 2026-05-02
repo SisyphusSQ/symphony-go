@@ -272,6 +272,8 @@ sequenceDiagram
 ## Writeback Summary
 - `targets`:
 - `linear_feedback_location`:
+- `changelog_action`:
+- `changelog_version`:
 - `status`:
 - `notes`:
 

@@ -18,6 +18,8 @@ required_files=(
   ".agent/plans/EXAMPLE-implementation.md"
   ".agent/state/TEMPLATE.md"
   ".agent/runs/TEMPLATE.md"
+  ".agent/skills/symphony-go-version-release/SKILL.md"
+  ".agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py"
   "scripts/harness/check.sh"
   "scripts/harness/common.sh"
   "scripts/harness/review_gate.sh"
@@ -29,6 +31,27 @@ for path in "${required_files[@]}"; do
     exit 1
   fi
 done
+
+collect_changelog_changed_files() {
+  local base_ref
+  base_ref="${HARNESS_CHANGELOG_BASE:-origin/main}"
+
+  {
+    git diff --name-only --diff-filter=ACMRTUXB HEAD || true
+    git diff --name-only --cached --diff-filter=ACMRTUXB || true
+    git ls-files --others --exclude-standard || true
+    if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+      git diff --name-only --diff-filter=ACMRTUXB "$base_ref"...HEAD || true
+    fi
+  } | awk 'NF' | sort -u
+}
+
+changelog_changed_files="$(collect_changelog_changed_files)"
+if [[ -n "$changelog_changed_files" ]]; then
+  printf '%s\n' "$changelog_changed_files" \
+    | python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py \
+      changelog-gate --repo . --changed-files-from - --json >/dev/null
+fi
 
 if [[ -f "docs/harness/prompt-templates.md" ]]; then
   echo "Obsolete harness file should not exist anymore: docs/harness/prompt-templates.md" >&2
@@ -654,6 +677,10 @@ plan=/tmp/example-plan.md
 
 ## Review Summary
 - `blocking_findings`: none
+
+## Writeback Summary
+- `changelog_action`: updated Unreleased
+- `changelog_version`: Unreleased
 EOF
 
 cat >"$tmp_plan_legacy" <<'EOF'
@@ -709,6 +736,10 @@ SmokeRunnerConfig{Pipeline: "smoke"}
 
 ## Review Summary
 - `blocking_findings`: none
+
+## Writeback Summary
+- `changelog_action`: updated Unreleased
+- `changelog_version`: Unreleased
 EOF
 
 cat >"$tmp_bad_plan_no_steps" <<'EOF'

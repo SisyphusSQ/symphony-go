@@ -186,7 +186,7 @@ Maintenance loop 的输出必须包含：
 
 最小要求：
 
-- 每一轮至少要把 `verification_summary`、`review_summary`、`writeback_summary`、`residual_risks`、`recovery_point`、`next_action` 写回 Linear
+- 每一轮至少要把 `verification_summary`、`review_summary`、`writeback_summary`、`changelog_action`、`changelog_version`、`residual_risks`、`recovery_point`、`next_action` 写回 Linear
 - 复杂任务还必须把 `plan_ref` 指向对应 Linear issue Doc；若使用本地导出文件，应记录 `local_plan_cache`
 - 若仓库启用了 PR / MR，再把代码叙事和 review thread 写到 PR / MR
 - 若本轮修改了设计或运行说明，再把必要事实回写到 repo 文档
