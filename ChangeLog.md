@@ -2,6 +2,7 @@
 
 #### feature:
 1. [TOO-116] 完善 CLI workflow 路径校验，支持 validate 与 run preflight 识别 positional、--workflow 和默认 ./WORKFLOW.md 路径。
+2. [TOO-119] 新增 typed runtime config layer，覆盖 SPEC 默认值、环境变量解析、workspace 路径归一化和启动前校验。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
