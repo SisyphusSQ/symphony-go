@@ -56,17 +56,19 @@ func newRunCommand() *cobra.Command {
 				return err
 			}
 			if err := workflow.RequireReadable(path); err != nil {
-				return err
+				return fmt.Errorf("startup failed: %w", err)
 			}
 
-			details := fmt.Sprintf("workflow %q", path)
+			details := ""
 			if opts.port != 0 {
-				details += fmt.Sprintf(", server.port override %d", opts.port)
+				details += fmt.Sprintf("; server.port override %d", opts.port)
 			}
 			if opts.instance != "" {
-				details += fmt.Sprintf(", instance %q", opts.instance)
+				details += fmt.Sprintf("; instance %q", opts.instance)
 			}
-			return notImplemented("run", details)
+			cmd.Printf("workflow %q passed startup validation%s\n", path, details)
+			cmd.Println("orchestrator runtime is not implemented in this slice; no workers started")
+			return nil
 		},
 	}
 
@@ -92,7 +94,8 @@ func newValidateCommand() *cobra.Command {
 			if err := workflow.RequireReadable(path); err != nil {
 				return err
 			}
-			return notImplemented("validate", fmt.Sprintf("workflow %q is readable", path))
+			cmd.Printf("workflow %q passed startup validation\n", path)
+			return nil
 		},
 	}
 
