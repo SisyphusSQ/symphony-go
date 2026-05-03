@@ -15,6 +15,7 @@
 12. [TOO-128] 新增 raw `linear_graphql` agent tool，复用 Linear tracker endpoint/auth，覆盖 structured errors、GraphQL error failure 和 Codex dynamic tool wiring fake 测试。
 13. [TOO-129] 新增 observability baseline，提供共享结构化事件、JSON/recorder logger、runtime status snapshot，并接入 orchestrator run/retry/failure 事件。
 14. [TOO-130] 新增 fake Linear + fake Codex E2E profile，覆盖 workflow load、dispatch、workspace/hooks、runner、retry/status、terminal cleanup 和 observability 的无外部服务验证。
+15. [TOO-131] 新增 opt-in 真实 Linear/Codex dogfood profile，提供默认显式 skipped 的验证入口、受控 workflow 默认值、runbook、conformance 结果和 unblock steps。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
