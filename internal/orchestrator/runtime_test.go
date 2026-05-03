@@ -101,6 +101,23 @@ func TestRuntimeTickDispatchesEligibleIssueThroughWorkspaceHooksAndRunner(t *tes
 	if got := requests[0].Prompt; got != "Dispatch prompt" {
 		t.Fatalf("RunRequest.Prompt = %q, want Dispatch prompt", got)
 	}
+	if got := requests[0].PromptTemplate; got != "Dispatch prompt" {
+		t.Fatalf("RunRequest.PromptTemplate = %q, want Dispatch prompt", got)
+	}
+	if got := requests[0].Issue.Identifier; got != "TOO-1" {
+		t.Fatalf("RunRequest.Issue.Identifier = %q, want TOO-1", got)
+	}
+	if requests[0].Attempt != nil {
+		t.Fatalf("RunRequest.Attempt = %v, want nil on first dispatch", *requests[0].Attempt)
+	}
+	if got := requests[0].MaxTurns; got != config.DefaultMaxTurns {
+		t.Fatalf("RunRequest.MaxTurns = %d, want default %d", got, config.DefaultMaxTurns)
+	}
+	if requests[0].Codex.TurnTimeout != config.DefaultCodexTurnTimeout ||
+		requests[0].Codex.ReadTimeout != config.DefaultCodexReadTimeout ||
+		requests[0].Codex.StallTimeout != config.DefaultCodexStallTimeout {
+		t.Fatalf("RunRequest.Codex timeouts = %#v", requests[0].Codex)
+	}
 	if got := requests[0].WorkspacePath; got != filepath.Join(workspace.root, "TOO-1") {
 		t.Fatalf("RunRequest.WorkspacePath = %q, want prepared workspace", got)
 	}
@@ -316,6 +333,10 @@ func TestRuntimeNormalExitSchedulesContinuationRetryAndRedispatchesWhenDue(t *te
 	})
 	if len(summary.Retries.Dispatched) != 1 || summary.Retries.Dispatched[0].Attempt != 1 {
 		t.Fatalf("retry dispatch summary = %#v, want attempt 1 dispatch", summary.Retries.Dispatched)
+	}
+	requests := runner.requestsSnapshot()
+	if len(requests) != 2 || requests[1].Attempt == nil || *requests[1].Attempt != 1 {
+		t.Fatalf("retry RunRequest.Attempt = %#v, want attempt 1", requests)
 	}
 }
 

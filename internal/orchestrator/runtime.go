@@ -345,7 +345,7 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 				IssueKey: issue.Identifier,
 				State:    issue.State,
 			})
-			go r.runIssue(runCtx, cfg, issue)
+			go r.runIssue(runCtx, cfg, issue, 0)
 		}
 	}
 
@@ -403,7 +403,7 @@ func (r *Runtime) tryStart(
 	return SkipSummary{}, runCtx, true
 }
 
-func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker.Issue) {
+func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker.Issue, attempt int) {
 	var sessionID string
 	normalExit := false
 	exitErr := "worker exited without result"
@@ -434,10 +434,15 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 	}
 
 	result, runErr := r.deps.Runner.Run(ctx, agent.RunRequest{
-		IssueID:       issue.ID,
-		IssueKey:      issue.Identifier,
-		WorkspacePath: ws.Path,
-		Prompt:        cfg.PromptBody,
+		Issue:          issue,
+		Attempt:        agent.AttemptFromNumber(attempt),
+		IssueID:        issue.ID,
+		IssueKey:       issue.Identifier,
+		WorkspacePath:  ws.Path,
+		Prompt:         cfg.PromptBody,
+		PromptTemplate: cfg.PromptBody,
+		MaxTurns:       cfg.Agent.MaxTurns,
+		Codex:          cfg.Codex,
 	})
 	sessionID = result.SessionID
 	_, _ = r.deps.Hooks.Run(ctx, hooks.AfterRun, ws.Path)
@@ -715,7 +720,7 @@ func (r *Runtime) handleDueRetries(
 		}
 		summary.Retries.Dispatched = append(summary.Retries.Dispatched, dispatch)
 		summary.Dispatched = append(summary.Dispatched, dispatch)
-		go r.runIssue(runCtx, cfg, issue)
+		go r.runIssue(runCtx, cfg, issue, entry.Attempt)
 	}
 }
 
