@@ -102,6 +102,7 @@ const (
 	EventTurnFailed         EventKind = "turn_failed"
 	EventTokenUsageUpdated  EventKind = "token_usage_updated"
 	EventRateLimitsUpdated  EventKind = "rate_limits_updated"
+	EventToolCall           EventKind = "tool_call"
 	EventUnsupportedRequest EventKind = "unsupported_server_request"
 	EventTimeout            EventKind = "timeout"
 	EventError              EventKind = "error"
@@ -592,7 +593,24 @@ func (s *runState) handleDynamicToolCall(ctx context.Context, msg rpcMessage) er
 		return s.respondDynamicToolFailure(msg.ID, "unsupported_tool", "unsupported dynamic tool: "+params.Tool)
 	}
 	result := s.linearTool.ExecuteJSON(ctx, params.Arguments)
+	s.emitToolCall(params, result.Success)
 	return s.respondDynamicToolResult(msg.ID, result.Success, result.Text())
+}
+
+func (s *runState) emitToolCall(params dynamicToolCallParams, success bool) {
+	payload, _ := json.Marshal(map[string]any{
+		"tool":    params.Tool,
+		"call_id": params.CallID,
+		"success": success,
+	})
+	s.emit(Event{
+		Kind:     EventToolCall,
+		Method:   "item/tool/call",
+		ThreadID: params.ThreadID,
+		TurnID:   params.TurnID,
+		Message:  "tool=" + params.Tool,
+		Payload:  payload,
+	})
 }
 
 func (s *runState) respondDynamicToolFailure(id json.RawMessage, code string, message string) error {
@@ -778,6 +796,15 @@ func validateRequest(req RunRequest) error {
 func withCodexDefaults(cfg config.Codex) config.Codex {
 	if strings.TrimSpace(cfg.Command) == "" {
 		cfg.Command = config.DefaultCodexCommand
+	}
+	if strings.TrimSpace(cfg.ApprovalPolicy) == "" {
+		cfg.ApprovalPolicy = config.DefaultCodexApprovalPolicy
+	}
+	if strings.TrimSpace(cfg.ThreadSandbox) == "" {
+		cfg.ThreadSandbox = config.DefaultCodexThreadSandbox
+	}
+	if len(cfg.TurnSandboxPolicy) == 0 {
+		cfg.TurnSandboxPolicy = map[string]any{"type": "workspaceWrite"}
 	}
 	if cfg.ReadTimeout <= 0 {
 		cfg.ReadTimeout = config.DefaultCodexReadTimeout

@@ -58,6 +58,12 @@ func TestFromWorkflowAppliesSpecDefaults(t *testing.T) {
 	if cfg.Agent.MaxTurns != DefaultMaxTurns {
 		t.Fatalf("MaxTurns = %d, want %d", cfg.Agent.MaxTurns, DefaultMaxTurns)
 	}
+	if cfg.Agent.MaxRunDuration != DefaultMaxRunDuration {
+		t.Fatalf("MaxRunDuration = %s, want %s", cfg.Agent.MaxRunDuration, DefaultMaxRunDuration)
+	}
+	if cfg.Agent.MaxTotalTokens != DefaultMaxTotalTokens {
+		t.Fatalf("MaxTotalTokens = %d, want %d", cfg.Agent.MaxTotalTokens, DefaultMaxTotalTokens)
+	}
 	if cfg.Agent.MaxRetryBackoff != DefaultMaxRetryBackoff {
 		t.Fatalf("MaxRetryBackoff = %s, want %s", cfg.Agent.MaxRetryBackoff, DefaultMaxRetryBackoff)
 	}
@@ -66,6 +72,15 @@ func TestFromWorkflowAppliesSpecDefaults(t *testing.T) {
 	}
 	if cfg.Codex.Command != DefaultCodexCommand {
 		t.Fatalf("Codex.Command = %q, want %q", cfg.Codex.Command, DefaultCodexCommand)
+	}
+	if cfg.Codex.ApprovalPolicy != DefaultCodexApprovalPolicy {
+		t.Fatalf("ApprovalPolicy = %q, want %q", cfg.Codex.ApprovalPolicy, DefaultCodexApprovalPolicy)
+	}
+	if cfg.Codex.ThreadSandbox != DefaultCodexThreadSandbox {
+		t.Fatalf("ThreadSandbox = %q, want %q", cfg.Codex.ThreadSandbox, DefaultCodexThreadSandbox)
+	}
+	if got := cfg.Codex.TurnSandboxPolicy["type"]; got != "workspaceWrite" {
+		t.Fatalf("TurnSandboxPolicy[type] = %v, want workspaceWrite", got)
 	}
 	if cfg.Codex.TurnTimeout != DefaultCodexTurnTimeout {
 		t.Fatalf("Codex.TurnTimeout = %s, want %s", cfg.Codex.TurnTimeout, DefaultCodexTurnTimeout)
@@ -101,9 +116,13 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 		"timeout_ms":   120000,
 	}
 	raw["agent"] = map[string]any{
-		"max_concurrent_agents": 2,
-		"max_turns":             8,
-		"max_retry_backoff_ms":  45000,
+		"max_concurrent_agents":       2,
+		"max_turns":                   8,
+		"max_run_duration_ms":         120000,
+		"max_total_tokens":            1000,
+		"max_cost_usd":                2.5,
+		"cost_per_million_tokens_usd": 10,
+		"max_retry_backoff_ms":        45000,
 		"max_concurrent_agents_by_state": map[string]any{
 			"Rework":  3,
 			"Merging": 2,
@@ -113,7 +132,7 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	}
 	raw["codex"] = map[string]any{
 		"command":             `codex app-server --token "$CODEX_TOKEN"`,
-		"approval_policy":     "never",
+		"approval_policy":     "on-request",
 		"thread_sandbox":      "workspace-write",
 		"turn_sandbox_policy": map[string]any{"type": "workspaceWrite"},
 		"turn_timeout_ms":     1000,
@@ -156,6 +175,12 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	if cfg.Agent.MaxConcurrentAgents != 2 || cfg.Agent.MaxTurns != 8 {
 		t.Fatalf("Agent limits = %#v", cfg.Agent)
 	}
+	if cfg.Agent.MaxRunDuration != 120*time.Second ||
+		cfg.Agent.MaxTotalTokens != 1000 ||
+		cfg.Agent.MaxCostUSD != 2.5 ||
+		cfg.Agent.CostPerMillionTokensUSD != 10 {
+		t.Fatalf("Agent guardrails = %#v", cfg.Agent)
+	}
 	if cfg.Agent.MaxRetryBackoff != 45*time.Second {
 		t.Fatalf("MaxRetryBackoff = %s, want 45s", cfg.Agent.MaxRetryBackoff)
 	}
@@ -166,8 +191,8 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	if cfg.Codex.Command != `codex app-server --token "$CODEX_TOKEN"` {
 		t.Fatalf("Codex.Command was unexpectedly expanded: %q", cfg.Codex.Command)
 	}
-	if cfg.Codex.ApprovalPolicy != "never" {
-		t.Fatalf("ApprovalPolicy = %q, want never", cfg.Codex.ApprovalPolicy)
+	if cfg.Codex.ApprovalPolicy != "on-request" {
+		t.Fatalf("ApprovalPolicy = %q, want on-request", cfg.Codex.ApprovalPolicy)
 	}
 	if cfg.Codex.ThreadSandbox != "workspace-write" {
 		t.Fatalf("ThreadSandbox = %q, want workspace-write", cfg.Codex.ThreadSandbox)
@@ -224,6 +249,31 @@ func TestFromWorkflowPreservesLiteralAPIKeyWithDollar(t *testing.T) {
 
 	if cfg.Tracker.APIKey != "literal$token" {
 		t.Fatalf("Tracker.APIKey = %q, want literal$token", cfg.Tracker.APIKey)
+	}
+}
+
+func TestFromWorkflowKeepsSafeDefaultsForBlankCodexSafetyFields(t *testing.T) {
+	raw := minimalRawConfig("literal-token", "symphony-go")
+	raw["codex"] = map[string]any{
+		"approval_policy":     " ",
+		"thread_sandbox":      "",
+		"turn_sandbox_policy": map[string]any{},
+	}
+
+	cfg := mustConfig(t, workflow.Definition{
+		Path:           filepath.Join(t.TempDir(), "WORKFLOW.md"),
+		Config:         raw,
+		PromptTemplate: "Prompt",
+	})
+
+	if cfg.Codex.ApprovalPolicy != DefaultCodexApprovalPolicy {
+		t.Fatalf("ApprovalPolicy = %q, want %q", cfg.Codex.ApprovalPolicy, DefaultCodexApprovalPolicy)
+	}
+	if cfg.Codex.ThreadSandbox != DefaultCodexThreadSandbox {
+		t.Fatalf("ThreadSandbox = %q, want %q", cfg.Codex.ThreadSandbox, DefaultCodexThreadSandbox)
+	}
+	if got := cfg.Codex.TurnSandboxPolicy["type"]; got != "workspaceWrite" {
+		t.Fatalf("TurnSandboxPolicy[type] = %v, want workspaceWrite", got)
 	}
 }
 
@@ -300,14 +350,21 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 			"timeout_ms": -1,
 		},
 		"agent": map[string]any{
-			"max_concurrent_agents": 0,
-			"max_turns":             -1,
-			"max_retry_backoff_ms":  0,
+			"max_concurrent_agents":       0,
+			"max_turns":                   -1,
+			"max_run_duration_ms":         0,
+			"max_total_tokens":            0,
+			"max_cost_usd":                -1.0,
+			"cost_per_million_tokens_usd": -1.0,
+			"max_retry_backoff_ms":        0,
 		},
 		"codex": map[string]any{
-			"command":         "   ",
-			"turn_timeout_ms": 0,
-			"read_timeout_ms": -1,
+			"command":             "   ",
+			"approval_policy":     "never",
+			"thread_sandbox":      "danger-full-access",
+			"turn_sandbox_policy": map[string]any{"type": "dangerFullAccess", "shell_environment_policy": map[string]any{"inherit": "all"}},
+			"turn_timeout_ms":     0,
+			"read_timeout_ms":     -1,
 		},
 	}
 
@@ -338,8 +395,16 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 		"hooks.timeout_ms",
 		"agent.max_concurrent_agents",
 		"agent.max_turns",
+		"agent.max_run_duration_ms",
+		"agent.max_total_tokens",
+		"agent.max_cost_usd",
+		"agent.cost_per_million_tokens_usd",
 		"agent.max_retry_backoff_ms",
 		"codex.command",
+		"codex.approval_policy",
+		"codex.thread_sandbox",
+		"codex.turn_sandbox_policy.type",
+		"codex.turn_sandbox_policy.shell_environment_policy.inherit",
 		"codex.turn_timeout_ms",
 		"codex.read_timeout_ms",
 	} {

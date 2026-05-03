@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SisyphusSQ/symphony-go/internal/config"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker"
@@ -14,6 +15,7 @@ import (
 var (
 	ErrInvalidRunRequest = errors.New("invalid_agent_run_request")
 	ErrMissingTurnClient = errors.New("missing_agent_turn_client")
+	ErrGuardrailExceeded = errors.New("guardrail_exceeded")
 )
 
 // Runner executes one issue attempt in an already prepared workspace.
@@ -38,16 +40,20 @@ func NewRunner(client TurnClient) *IssueRunner {
 }
 
 type RunRequest struct {
-	Issue          tracker.Issue
-	Attempt        *int
-	IssueID        string
-	IssueKey       string
-	WorkspacePath  string
-	Prompt         string
-	PromptTemplate string
-	MaxTurns       int
-	Tracker        config.Tracker
-	Codex          config.Codex
+	Issue                   tracker.Issue
+	Attempt                 *int
+	IssueID                 string
+	IssueKey                string
+	WorkspacePath           string
+	Prompt                  string
+	PromptTemplate          string
+	MaxTurns                int
+	MaxRunDuration          time.Duration
+	MaxTotalTokens          int64
+	MaxCostUSD              float64
+	CostPerMillionTokensUSD float64
+	Tracker                 config.Tracker
+	Codex                   config.Codex
 }
 
 type TurnRequest struct {
@@ -77,6 +83,17 @@ type TurnResult struct {
 	Summary   string
 	Continue  bool
 	Usage     TokenUsage
+	Events    []Event
+}
+
+type Event struct {
+	Kind      string
+	Method    string
+	Timestamp time.Time
+	ThreadID  string
+	TurnID    string
+	Message   string
+	Payload   string
 }
 
 type RunMetadata struct {
@@ -92,6 +109,8 @@ type RunMetadata struct {
 	Status          string
 	Summary         string
 	Usage           TokenUsage
+	Events          []Event
+	Guardrail       GuardrailDecision
 }
 
 type TokenUsage struct {
@@ -100,6 +119,33 @@ type TokenUsage struct {
 	ReasoningOutputTokens int64
 	TotalTokens           int64
 	CachedInputTokens     int64
+}
+
+type GuardrailDecision struct {
+	Exceeded bool
+	Reason   string
+	Limit    string
+	Actual   string
+}
+
+type GuardrailError struct {
+	Decision GuardrailDecision
+}
+
+func (err *GuardrailError) Error() string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s: reason=%s limit=%s actual=%s",
+		ErrGuardrailExceeded,
+		err.Decision.Reason,
+		err.Decision.Limit,
+		err.Decision.Actual,
+	)
+}
+
+func (err *GuardrailError) Is(target error) bool {
+	return target == ErrGuardrailExceeded
 }
 
 // AttemptFromNumber returns nil for the first run and a stable pointer for
@@ -136,6 +182,7 @@ func (runner *IssueRunner) Run(ctx context.Context, req RunRequest) (RunResult, 
 		MaxTurns:        normalized.MaxTurns,
 	}
 
+	startedAt := time.Now()
 	var result RunResult
 	for turnNumber := 1; turnNumber <= normalized.MaxTurns; turnNumber++ {
 		turnResult, turnErr := runner.client.RunTurn(ctx, TurnRequest{
@@ -158,6 +205,7 @@ func (runner *IssueRunner) Run(ctx context.Context, req RunRequest) (RunResult, 
 		metadata.Status = turnResult.Status
 		metadata.Summary = firstNonEmpty(turnResult.Summary, turnResult.Status)
 		metadata.Usage = turnResult.Usage
+		metadata.Events = append(metadata.Events, cloneEvents(turnResult.Events)...)
 
 		result = RunResult{
 			SessionID: metadata.SessionID,
@@ -166,6 +214,11 @@ func (runner *IssueRunner) Run(ctx context.Context, req RunRequest) (RunResult, 
 		}
 		if turnErr != nil {
 			return result, turnErr
+		}
+		if decision := evaluateGuardrails(normalized, metadata, startedAt, turnResult.Continue); decision.Exceeded {
+			metadata.Guardrail = decision
+			result.Metadata = metadata
+			return result, &GuardrailError{Decision: decision}
 		}
 		if !turnResult.Continue || turnNumber == normalized.MaxTurns {
 			return result, nil
@@ -196,6 +249,12 @@ func normalizeRunRequest(req RunRequest) RunRequest {
 	if normalized.MaxTurns == 0 {
 		normalized.MaxTurns = config.DefaultMaxTurns
 	}
+	if normalized.MaxRunDuration == 0 {
+		normalized.MaxRunDuration = config.DefaultMaxRunDuration
+	}
+	if normalized.MaxTotalTokens == 0 {
+		normalized.MaxTotalTokens = config.DefaultMaxTotalTokens
+	}
 	return normalized
 }
 
@@ -213,6 +272,62 @@ func validateRunRequest(req RunRequest) error {
 		return fmt.Errorf("%w: max turns must be positive", ErrInvalidRunRequest)
 	}
 	return nil
+}
+
+func evaluateGuardrails(
+	req RunRequest,
+	metadata RunMetadata,
+	startedAt time.Time,
+	wantsContinuation bool,
+) GuardrailDecision {
+	if wantsContinuation && metadata.TurnCount >= req.MaxTurns {
+		return GuardrailDecision{
+			Exceeded: true,
+			Reason:   "max_turns",
+			Limit:    fmt.Sprintf("%d", req.MaxTurns),
+			Actual:   fmt.Sprintf("%d", metadata.TurnCount),
+		}
+	}
+	if req.MaxRunDuration > 0 {
+		elapsed := time.Since(startedAt)
+		if elapsed > req.MaxRunDuration {
+			return GuardrailDecision{
+				Exceeded: true,
+				Reason:   "max_run_duration",
+				Limit:    req.MaxRunDuration.String(),
+				Actual:   elapsed.String(),
+			}
+		}
+	}
+	if req.MaxTotalTokens > 0 && metadata.Usage.TotalTokens > req.MaxTotalTokens {
+		return GuardrailDecision{
+			Exceeded: true,
+			Reason:   "max_total_tokens",
+			Limit:    fmt.Sprintf("%d", req.MaxTotalTokens),
+			Actual:   fmt.Sprintf("%d", metadata.Usage.TotalTokens),
+		}
+	}
+	if req.MaxCostUSD > 0 && req.CostPerMillionTokensUSD > 0 {
+		actual := float64(metadata.Usage.TotalTokens) / 1_000_000 * req.CostPerMillionTokensUSD
+		if actual > req.MaxCostUSD {
+			return GuardrailDecision{
+				Exceeded: true,
+				Reason:   "max_cost_usd",
+				Limit:    fmt.Sprintf("%.6f", req.MaxCostUSD),
+				Actual:   fmt.Sprintf("%.6f", actual),
+			}
+		}
+	}
+	return GuardrailDecision{}
+}
+
+func cloneEvents(events []Event) []Event {
+	if len(events) == 0 {
+		return nil
+	}
+	cloned := make([]Event, len(events))
+	copy(cloned, events)
+	return cloned
 }
 
 func continuationPrompt(issue tracker.Issue, turnNumber int, maxTurns int) string {

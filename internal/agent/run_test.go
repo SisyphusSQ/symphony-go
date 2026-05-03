@@ -181,8 +181,8 @@ func TestIssueRunnerHonorsMaxTurnsAndContinuationPrompt(t *testing.T) {
 		PromptTemplate: "original {{ issue.identifier }}",
 		MaxTurns:       2,
 	})
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
+	if !errors.Is(err, ErrGuardrailExceeded) {
+		t.Fatalf("Run error = %v, want ErrGuardrailExceeded", err)
 	}
 	requests := client.requestsSnapshot()
 	if len(requests) != 2 {
@@ -197,6 +197,9 @@ func TestIssueRunnerHonorsMaxTurnsAndContinuationPrompt(t *testing.T) {
 	}
 	if result.Metadata.TurnCount != 2 || result.SessionID != "session-2" {
 		t.Fatalf("result = %#v", result)
+	}
+	if !result.Metadata.Guardrail.Exceeded || result.Metadata.Guardrail.Reason != "max_turns" {
+		t.Fatalf("guardrail = %#v, want max_turns exceeded", result.Metadata.Guardrail)
 	}
 }
 
@@ -231,6 +234,61 @@ func TestIssueRunnerRejectsNegativeMaxTurns(t *testing.T) {
 	}
 	if len(client.requestsSnapshot()) != 0 {
 		t.Fatal("turn client was called after invalid max turns")
+	}
+}
+
+func TestIssueRunnerStopsWhenTokenGuardrailIsExceeded(t *testing.T) {
+	client := &fakeTurnClient{results: []TurnResult{{
+		SessionID: "session-1",
+		Status:    "completed",
+		Usage:     TokenUsage{TotalTokens: 101},
+		Events: []Event{{
+			Kind:    "token_usage_updated",
+			Message: "usage",
+		}},
+	}}}
+
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Issue:          tracker.Issue{ID: "issue-1", Identifier: "TOO-134"},
+		WorkspacePath:  t.TempDir(),
+		PromptTemplate: "issue {{ issue.identifier }}",
+		MaxTurns:       2,
+		MaxTotalTokens: 100,
+	})
+	if !errors.Is(err, ErrGuardrailExceeded) {
+		t.Fatalf("Run error = %v, want ErrGuardrailExceeded", err)
+	}
+	if result.Metadata.Guardrail.Reason != "max_total_tokens" ||
+		result.Metadata.Guardrail.Limit != "100" ||
+		result.Metadata.Guardrail.Actual != "101" {
+		t.Fatalf("guardrail = %#v", result.Metadata.Guardrail)
+	}
+	if len(result.Metadata.Events) != 1 || result.Metadata.Events[0].Kind != "token_usage_updated" {
+		t.Fatalf("metadata events = %#v, want propagated token event", result.Metadata.Events)
+	}
+}
+
+func TestIssueRunnerStopsWhenEstimatedCostGuardrailIsExceeded(t *testing.T) {
+	client := &fakeTurnClient{results: []TurnResult{{
+		SessionID: "session-1",
+		Status:    "completed",
+		Usage:     TokenUsage{TotalTokens: 2_000_000},
+	}}}
+
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Issue:                   tracker.Issue{ID: "issue-1", Identifier: "TOO-134"},
+		WorkspacePath:           t.TempDir(),
+		PromptTemplate:          "issue {{ issue.identifier }}",
+		MaxTurns:                1,
+		MaxCostUSD:              0.10,
+		CostPerMillionTokensUSD: 0.20,
+		MaxTotalTokens:          10_000_000,
+	})
+	if !errors.Is(err, ErrGuardrailExceeded) {
+		t.Fatalf("Run error = %v, want ErrGuardrailExceeded", err)
+	}
+	if result.Metadata.Guardrail.Reason != "max_cost_usd" {
+		t.Fatalf("guardrail = %#v, want max_cost_usd", result.Metadata.Guardrail)
 	}
 }
 

@@ -682,6 +682,69 @@ func TestRuntimeAbnormalExitSchedulesExponentialRetryWithConfiguredCap(t *testin
 	}
 }
 
+func TestRuntimeGuardrailExceededStopsWithoutRetryAndPersistsRedactedAuditEvents(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 1, "Prompt")
+	recorder := observability.NewRecorder()
+	store := &fakeStateStore{}
+	decision := agent.GuardrailDecision{
+		Exceeded: true,
+		Reason:   "max_total_tokens",
+		Limit:    "100",
+		Actual:   "101",
+	}
+	runner := newFakeAgentRunner(nil)
+	runner.runResults = []agent.RunResult{{
+		SessionID: "session-TOO-134",
+		Metadata: agent.RunMetadata{
+			SessionID: "session-TOO-134",
+			Status:    "failed",
+			Guardrail: decision,
+			Events: []agent.Event{{
+				Kind:    "tool_call",
+				Method:  "item/tool/call",
+				Message: "token=literal-token",
+				Payload: `{"token":"literal-token","query":"query { issue { id } }"}`,
+			}},
+		},
+	}}
+	runner.runErrors = []error{&agent.GuardrailError{Decision: decision}}
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-134", "Todo"),
+		}},
+		Workspace:  &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:      &fakeHookRunner{},
+		Runner:     runner,
+		Logger:     recorder,
+		StateStore: store,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RunningIssueCount() == 0
+	})
+	if runtime.RetryIssueCount() != 0 {
+		t.Fatalf("RetryIssueCount() = %d, want no retry after guardrail stop", runtime.RetryIssueCount())
+	}
+	if len(recorder.EventsByType(observability.EventGuardrailExceeded)) == 0 {
+		t.Fatalf("guardrail event missing from logger events: %#v", recorder.Events())
+	}
+	if !store.hasEventType("guardrail.exceeded") || !store.hasEventType("agent.tool_call") {
+		t.Fatalf("audit events = %#v, want guardrail and tool call", store.eventsSnapshot())
+	}
+	for _, payload := range store.payloads() {
+		if strings.Contains(payload, "literal-token") {
+			t.Fatalf("audit payload leaked literal token: %s", payload)
+		}
+	}
+}
+
 func TestRuntimeDueRetryReleasesWhenIssueIsNoLongerCandidate(t *testing.T) {
 	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
 	clock := newFakeClock(start)
@@ -1312,11 +1375,12 @@ func (f *fakeHookRunner) hasCall(want hooks.Name) bool {
 }
 
 type fakeAgentRunner struct {
-	mu        sync.Mutex
-	requests  []agent.RunRequest
-	started   chan agent.RunRequest
-	release   <-chan struct{}
-	runErrors []error
+	mu         sync.Mutex
+	requests   []agent.RunRequest
+	started    chan agent.RunRequest
+	release    <-chan struct{}
+	runResults []agent.RunResult
+	runErrors  []error
 }
 
 func newFakeAgentRunner(release <-chan struct{}) *fakeAgentRunner {
@@ -1342,12 +1406,93 @@ func (f *fakeAgentRunner) Run(ctx context.Context, req agent.RunRequest) (agent.
 	}
 	result := agent.RunResult{SessionID: "session-" + req.IssueKey}
 	f.mu.Lock()
+	if callIndex < len(f.runResults) {
+		result = f.runResults[callIndex]
+	}
 	var runErr error
 	if callIndex < len(f.runErrors) {
 		runErr = f.runErrors[callIndex]
 	}
 	f.mu.Unlock()
 	return result, runErr
+}
+
+type fakeStateStore struct {
+	mu      sync.Mutex
+	runs    []runstate.Run
+	retries []runstate.Retry
+	events  []runstate.Event
+}
+
+func (s *fakeStateStore) RecoverStartup(context.Context, time.Time) (runstate.RecoverySnapshot, error) {
+	return runstate.RecoverySnapshot{}, nil
+}
+
+func (s *fakeStateStore) ClaimRun(_ context.Context, run runstate.Run, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runs = append(s.runs, run)
+	return nil
+}
+
+func (s *fakeStateStore) UpdateRun(_ context.Context, run runstate.Run) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runs = append(s.runs, run)
+	return nil
+}
+
+func (s *fakeStateStore) CompleteRun(context.Context, string, runstate.RunStatus, time.Time, string) error {
+	return nil
+}
+
+func (s *fakeStateStore) UpsertRetry(_ context.Context, retry runstate.Retry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retries = append(s.retries, retry)
+	return nil
+}
+
+func (s *fakeStateStore) DeleteRetry(context.Context, string) error {
+	return nil
+}
+
+func (s *fakeStateStore) RecordSession(context.Context, runstate.Session) error {
+	return nil
+}
+
+func (s *fakeStateStore) RecordEvent(_ context.Context, event runstate.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *fakeStateStore) hasEventType(eventType string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range s.events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *fakeStateStore) payloads() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	payloads := make([]string, 0, len(s.events))
+	for _, event := range s.events {
+		payloads = append(payloads, event.PayloadJSON)
+	}
+	return payloads
+}
+
+func (s *fakeStateStore) eventsSnapshot() []runstate.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]runstate.Event(nil), s.events...)
 }
 
 func (f *fakeAgentRunner) callCount() int {

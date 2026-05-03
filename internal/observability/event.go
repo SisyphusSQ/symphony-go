@@ -39,6 +39,8 @@ const (
 
 	EventAgentRunCompleted EventType = "agent.run.completed"
 	EventAgentRunFailed    EventType = "agent.run.failed"
+	EventAgentToolCall     EventType = "agent.tool.call"
+	EventGuardrailExceeded EventType = "guardrail.exceeded"
 
 	EventRetryScheduled  EventType = "retry.scheduled"
 	EventRetryDispatched EventType = "retry.dispatched"

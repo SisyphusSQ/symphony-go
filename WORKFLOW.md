@@ -50,11 +50,18 @@ hooks:
 agent:
   max_concurrent_agents: 1
   max_turns: 20
+  max_run_duration_ms: 14400000
+  max_total_tokens: 500000
+  # Set both max_cost_usd and cost_per_million_tokens_usd to enable an
+  # estimated token-cost guardrail for deployments with a known pricing model.
+  max_cost_usd: 0
+  cost_per_million_tokens_usd: 0
   max_concurrent_agents_by_state:
     Rework: 1
 
 codex:
   command: codex app-server
+  approval_policy: on-request
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite

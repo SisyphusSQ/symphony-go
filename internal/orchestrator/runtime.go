@@ -14,6 +14,7 @@ import (
 	"github.com/SisyphusSQ/symphony-go/internal/hooks"
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	"github.com/SisyphusSQ/symphony-go/internal/policy"
+	"github.com/SisyphusSQ/symphony-go/internal/safety"
 	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker"
 	"github.com/SisyphusSQ/symphony-go/internal/workspace"
@@ -593,9 +594,10 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 	var sessionID string
 	var metadata agent.RunMetadata
 	normalExit := false
+	retryable := true
 	exitErr := "worker exited without result"
 	defer func() {
-		r.completeRun(ctx, issue.ID, sessionID, metadata, normalExit, exitErr, cfg)
+		r.completeRun(ctx, issue.ID, sessionID, metadata, normalExit, retryable, exitErr, cfg)
 	}()
 
 	r.emitEvent(ctx, runEvent(issue, observability.EventOrchestratorRunStarted, observability.RunStatusRunning, attempt, "action=run_start run_status=running"))
@@ -654,16 +656,20 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 	}
 
 	result, runErr := r.deps.Runner.Run(ctx, agent.RunRequest{
-		Issue:          issue,
-		Attempt:        agent.AttemptFromNumber(attempt),
-		IssueID:        issue.ID,
-		IssueKey:       issue.Identifier,
-		WorkspacePath:  ws.Path,
-		Prompt:         cfg.PromptBody,
-		PromptTemplate: cfg.PromptBody,
-		MaxTurns:       cfg.Agent.MaxTurns,
-		Tracker:        cfg.Tracker,
-		Codex:          cfg.Codex,
+		Issue:                   issue,
+		Attempt:                 agent.AttemptFromNumber(attempt),
+		IssueID:                 issue.ID,
+		IssueKey:                issue.Identifier,
+		WorkspacePath:           ws.Path,
+		Prompt:                  cfg.PromptBody,
+		PromptTemplate:          cfg.PromptBody,
+		MaxTurns:                cfg.Agent.MaxTurns,
+		MaxRunDuration:          cfg.Agent.MaxRunDuration,
+		MaxTotalTokens:          cfg.Agent.MaxTotalTokens,
+		MaxCostUSD:              cfg.Agent.MaxCostUSD,
+		CostPerMillionTokensUSD: cfg.Agent.CostPerMillionTokensUSD,
+		Tracker:                 cfg.Tracker,
+		Codex:                   cfg.Codex,
 	})
 	sessionID = result.SessionID
 	metadata = result.Metadata
@@ -678,6 +684,22 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 	}
 	if runErr != nil {
 		exitErr = runErr.Error()
+		if errors.Is(runErr, agent.ErrGuardrailExceeded) {
+			retryable = false
+			event := sessionRunEvent(
+				issue,
+				sessionID,
+				observability.EventGuardrailExceeded,
+				observability.RunStatusStopped,
+				attempt,
+				"action=guardrail_exceeded run_status=stopped",
+				runErr,
+			)
+			event.Level = observability.LevelWarn
+			event.Fields = guardrailFields(metadata.Guardrail)
+			r.emitEvent(ctx, event)
+			return
+		}
 		r.emitEvent(ctx, sessionRunEvent(
 			issue,
 			sessionID,
@@ -708,6 +730,7 @@ func (r *Runtime) completeRun(
 	sessionID string,
 	metadata agent.RunMetadata,
 	normalExit bool,
+	retryable bool,
 	exitErr string,
 	cfg config.Config,
 ) {
@@ -753,8 +776,30 @@ func (r *Runtime) completeRun(
 		event.RetryDueAt = &dueAt
 		r.mu.Unlock()
 		r.persistSession(ctx, record, sessionID, metadata, now)
+		r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
 		r.persistRunCompletion(ctx, record, runstate.RunStatusCompleted, now, "")
 		r.persistRetry(ctx, entry)
+		r.emitEvent(ctx, event)
+		return
+	}
+
+	if !retryable {
+		event = sessionRunEvent(
+			issue,
+			sessionID,
+			observability.EventGuardrailExceeded,
+			observability.RunStatusStopped,
+			record.Attempt,
+			"action=guardrail_stop run_status=stopped",
+			nil,
+		)
+		event.Level = observability.LevelWarn
+		event.Error = exitErr
+		event.Fields = guardrailFields(metadata.Guardrail)
+		r.mu.Unlock()
+		r.persistSession(ctx, record, sessionID, metadata, now)
+		r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+		r.persistRunCompletion(ctx, record, runstate.RunStatusStopped, now, exitErr)
 		r.emitEvent(ctx, event)
 		return
 	}
@@ -801,6 +846,7 @@ func (r *Runtime) completeRun(
 	}
 	r.mu.Unlock()
 	r.persistSession(ctx, record, sessionID, metadata, now)
+	r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
 	r.persistRunCompletion(ctx, record, runstate.RunStatusFailed, now, exitErr)
 	r.persistRetry(ctx, entry)
 	r.emitEvent(ctx, event)
@@ -981,6 +1027,53 @@ func (r *Runtime) persistSession(
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	})
+}
+
+func (r *Runtime) persistAgentEvents(
+	ctx context.Context,
+	cfg config.Config,
+	record RunRecord,
+	sessionID string,
+	events []agent.Event,
+	now time.Time,
+) {
+	if r.deps.StateStore == nil || record.RunID == "" || len(events) == 0 {
+		return
+	}
+	redactor := safety.NewRedactor(cfg)
+	for _, event := range events {
+		if event.Kind == "" {
+			continue
+		}
+		createdAt := event.Timestamp
+		if createdAt.IsZero() {
+			createdAt = now
+		}
+		payload := map[string]any{
+			"kind":    event.Kind,
+			"method":  event.Method,
+			"message": event.Message,
+			"thread":  event.ThreadID,
+			"turn":    event.TurnID,
+		}
+		if event.Payload != "" {
+			payload["payload"] = json.RawMessage(redactor.JSON(event.Payload))
+		}
+		payloadJSON, err := json.Marshal(redactor.Any(payload))
+		if err != nil {
+			continue
+		}
+		_ = r.deps.StateStore.RecordEvent(ctx, runstate.Event{
+			ID:          runstate.NewID("event"),
+			RunID:       record.RunID,
+			IssueID:     record.IssueID,
+			IssueKey:    record.IssueKey,
+			SessionID:   sessionID,
+			Type:        "agent." + event.Kind,
+			PayloadJSON: string(payloadJSON),
+			CreatedAt:   createdAt,
+		})
+	}
 }
 
 // CleanupTerminalWorkspaces removes workspaces for currently terminal tracker issues.
@@ -1295,6 +1388,7 @@ func (r *Runtime) emitEvent(ctx context.Context, event observability.Event) {
 	if event.Time.IsZero() && r.deps.Clock != nil {
 		event.Time = r.deps.Clock()
 	}
+	event = safety.ConfigEvent(r.FutureDispatchConfig(), event)
 	_ = r.deps.Logger.Log(ctx, event)
 	if r.deps.StateStore == nil {
 		return
@@ -1387,7 +1481,27 @@ func hookEvent(issue tracker.Issue, name hooks.Name, attempt int, err error) obs
 	event.Level = observability.LevelError
 	event.Error = errorString(err)
 	event.Fields = map[string]any{"hook": name.String()}
+	var hookErr *hooks.Error
+	if errors.As(err, &hookErr) {
+		event.Fields["command"] = hookErr.Result.Command
+		event.Fields["stdout"] = hookErr.Result.Stdout
+		event.Fields["stderr"] = hookErr.Result.Stderr
+		event.Fields["exit_code"] = hookErr.Result.ExitCode
+		event.Fields["timed_out"] = hookErr.Result.TimedOut
+		event.Fields["duration_ms"] = hookErr.Result.Duration.Milliseconds()
+	}
 	return event
+}
+
+func guardrailFields(decision agent.GuardrailDecision) map[string]any {
+	if !decision.Exceeded {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"reason": decision.Reason,
+		"limit":  decision.Limit,
+		"actual": decision.Actual,
+	}
 }
 
 func retryEventForIssue(

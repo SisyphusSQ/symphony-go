@@ -204,7 +204,7 @@ agent:
   max_retry_backoff_ms: 10000
 codex:
   command: %q
-  approval_policy: never
+  approval_policy: on-request
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite

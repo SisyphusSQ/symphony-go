@@ -22,7 +22,7 @@ import (
 func TestClientRunSuccess(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := testCodexConfig(helperCommand(), 2*time.Second)
-	cfg.ApprovalPolicy = "never"
+	cfg.ApprovalPolicy = "on-request"
 	cfg.ThreadSandbox = "workspace-write"
 	cfg.TurnSandboxPolicy = map[string]any{"type": "workspaceWrite"}
 
@@ -170,6 +170,7 @@ func TestClientRunHandlesLinearGraphQLToolCall(t *testing.T) {
 	if result.Status != "completed" {
 		t.Fatalf("Status = %q", result.Status)
 	}
+	requireEvent(t, result.Events, EventToolCall)
 }
 
 func TestRunnerRunAdaptsClientResult(t *testing.T) {
@@ -216,7 +217,7 @@ func runFakeMode(t *testing.T, mode string, cfg config.Codex) (Result, error) {
 func testCodexConfig(command string, timeout time.Duration) config.Codex {
 	return config.Codex{
 		Command:           command,
-		ApprovalPolicy:    "never",
+		ApprovalPolicy:    "on-request",
 		ThreadSandbox:     "workspace-write",
 		TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"},
 		ReadTimeout:       timeout,
@@ -525,7 +526,7 @@ func assertThreadStart(raw json.RawMessage, mode string) error {
 	if os.Getenv("SYMPHONY_FAKE_EXPECT_ENV") != "present" {
 		return fmt.Errorf("missing inherited test env")
 	}
-	if params["approvalPolicy"] != "never" {
+	if params["approvalPolicy"] != "on-request" {
 		return fmt.Errorf("approvalPolicy = %v", params["approvalPolicy"])
 	}
 	if params["sandbox"] != "workspace-write" {
@@ -566,7 +567,7 @@ func assertTurnStart(raw json.RawMessage, mode string) error {
 	if !samePath(params.CWD, cwd) {
 		return fmt.Errorf("turn cwd = %s, want %s", params.CWD, cwd)
 	}
-	if params.Approval != "never" {
+	if params.Approval != "on-request" {
 		return fmt.Errorf("turn approvalPolicy = %q", params.Approval)
 	}
 	if params.SandboxPolicy["type"] != "workspaceWrite" {

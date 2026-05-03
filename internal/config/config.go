@@ -21,9 +21,13 @@ const (
 	DefaultHookTimeout         = 60 * time.Second
 	DefaultMaxConcurrentAgents = 10
 	DefaultMaxTurns            = 20
+	DefaultMaxRunDuration      = 4 * time.Hour
+	DefaultMaxTotalTokens      = 500000
 	DefaultMaxRetryBackoff     = 5 * time.Minute
 	DefaultStateStoreLease     = 5 * time.Minute
 	DefaultCodexCommand        = "codex app-server"
+	DefaultCodexApprovalPolicy = "on-request"
+	DefaultCodexThreadSandbox  = "workspace-write"
 	DefaultCodexTurnTimeout    = time.Hour
 	DefaultCodexReadTimeout    = 5 * time.Second
 	DefaultCodexStallTimeout   = 5 * time.Minute
@@ -105,6 +109,10 @@ type Hooks struct {
 type Agent struct {
 	MaxConcurrentAgents        int
 	MaxTurns                   int
+	MaxRunDuration             time.Duration
+	MaxTotalTokens             int64
+	MaxCostUSD                 float64
+	CostPerMillionTokensUSD    float64
 	MaxRetryBackoff            time.Duration
 	MaxConcurrentAgentsByState map[string]int
 }
@@ -305,6 +313,30 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 		cfg.Agent.MaxTurns,
 		positiveInt,
 	)
+	cfg.Agent.MaxRunDuration = resolver.durationFieldDefault(
+		agent,
+		"agent.max_run_duration_ms",
+		cfg.Agent.MaxRunDuration,
+		positiveDuration,
+	)
+	cfg.Agent.MaxTotalTokens = int64(resolver.intFieldDefault(
+		agent,
+		"agent.max_total_tokens",
+		int(cfg.Agent.MaxTotalTokens),
+		positiveInt,
+	))
+	cfg.Agent.MaxCostUSD = resolver.floatFieldDefault(
+		agent,
+		"agent.max_cost_usd",
+		cfg.Agent.MaxCostUSD,
+		nonNegativeFloat,
+	)
+	cfg.Agent.CostPerMillionTokensUSD = resolver.floatFieldDefault(
+		agent,
+		"agent.cost_per_million_tokens_usd",
+		cfg.Agent.CostPerMillionTokensUSD,
+		nonNegativeFloat,
+	)
 	cfg.Agent.MaxRetryBackoff = resolver.durationFieldDefault(
 		agent,
 		"agent.max_retry_backoff_ms",
@@ -321,9 +353,20 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 		"codex.command",
 		cfg.Codex.Command,
 	))
-	cfg.Codex.ApprovalPolicy = strings.TrimSpace(resolver.stringField(codex, "codex.approval_policy"))
-	cfg.Codex.ThreadSandbox = strings.TrimSpace(resolver.stringField(codex, "codex.thread_sandbox"))
-	cfg.Codex.TurnSandboxPolicy = resolver.mapField(codex, "codex.turn_sandbox_policy")
+	cfg.Codex.ApprovalPolicy = strings.TrimSpace(resolver.stringFieldDefault(
+		codex,
+		"codex.approval_policy",
+		cfg.Codex.ApprovalPolicy,
+	))
+	cfg.Codex.ThreadSandbox = strings.TrimSpace(resolver.stringFieldDefault(
+		codex,
+		"codex.thread_sandbox",
+		cfg.Codex.ThreadSandbox,
+	))
+	if _, ok := lookup(codex, "codex.turn_sandbox_policy"); ok {
+		cfg.Codex.TurnSandboxPolicy = resolver.mapField(codex, "codex.turn_sandbox_policy")
+	}
+	applyCodexSafetyDefaults(&cfg.Codex)
 	cfg.Codex.TurnTimeout = resolver.durationFieldDefault(
 		codex,
 		"codex.turn_timeout_ms",
@@ -400,15 +443,19 @@ func defaultConfig(tempDir string) Config {
 		Agent: Agent{
 			MaxConcurrentAgents:        DefaultMaxConcurrentAgents,
 			MaxTurns:                   DefaultMaxTurns,
+			MaxRunDuration:             DefaultMaxRunDuration,
+			MaxTotalTokens:             DefaultMaxTotalTokens,
 			MaxRetryBackoff:            DefaultMaxRetryBackoff,
 			MaxConcurrentAgentsByState: map[string]int{},
 		},
 		Codex: Codex{
 			Command:           DefaultCodexCommand,
+			ApprovalPolicy:    DefaultCodexApprovalPolicy,
+			ThreadSandbox:     DefaultCodexThreadSandbox,
 			TurnTimeout:       DefaultCodexTurnTimeout,
 			ReadTimeout:       DefaultCodexReadTimeout,
 			StallTimeout:      DefaultCodexStallTimeout,
-			TurnSandboxPolicy: map[string]any{},
+			TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"},
 		},
 	}
 }
@@ -535,6 +582,28 @@ func (r *resolver) intFieldDefault(
 	value, ok := coerceInt(raw)
 	if !ok {
 		r.add(field, fmt.Errorf("must be an integer, got %T", raw))
+		return fallback
+	}
+	if err := validate(value); err != nil {
+		r.add(field, err)
+		return fallback
+	}
+	return value
+}
+
+func (r *resolver) floatFieldDefault(
+	obj map[string]any,
+	field string,
+	fallback float64,
+	validate func(float64) error,
+) float64 {
+	raw, ok := lookup(obj, field)
+	if !ok || raw == nil {
+		return fallback
+	}
+	value, ok := coerceFloat(raw)
+	if !ok {
+		r.add(field, fmt.Errorf("must be a number, got %T", raw))
 		return fallback
 	}
 	if err := validate(value); err != nil {
@@ -711,6 +780,21 @@ func (r *resolver) validateDispatchPreflight(cfg Config) {
 	if cfg.Codex.Command == "" {
 		r.add("codex.command", errors.New("is required"))
 	}
+	if normalizedPolicy(cfg.Codex.ApprovalPolicy) == "never" {
+		r.add("codex.approval_policy", errors.New("must not be never for production baseline"))
+	}
+	if normalizedPolicy(cfg.Codex.ThreadSandbox) == "dangerfullaccess" {
+		r.add("codex.thread_sandbox", errors.New("must not be danger-full-access for production baseline"))
+	}
+	if normalizedPolicy(stringFromMap(cfg.Codex.TurnSandboxPolicy, "type")) == "dangerfullaccess" {
+		r.add("codex.turn_sandbox_policy.type", errors.New("must not be dangerFullAccess for production baseline"))
+	}
+	if inheritsAllShellEnvironment(cfg.Codex.TurnSandboxPolicy) {
+		r.add("codex.turn_sandbox_policy.shell_environment_policy.inherit", errors.New("must not inherit all environment variables"))
+	}
+	if cfg.Agent.MaxCostUSD > 0 && cfg.Agent.CostPerMillionTokensUSD <= 0 {
+		r.add("agent.cost_per_million_tokens_usd", errors.New("must be positive when agent.max_cost_usd is set"))
+	}
 }
 
 func (r *resolver) add(field string, err error) {
@@ -773,6 +857,42 @@ func coerceInt(raw any) (int, bool) {
 	}
 }
 
+func coerceFloat(raw any) (float64, bool) {
+	var result float64
+	switch value := raw.(type) {
+	case float64:
+		result = value
+	case float32:
+		result = float64(value)
+	case int:
+		result = float64(value)
+	case int8:
+		result = float64(value)
+	case int16:
+		result = float64(value)
+	case int32:
+		result = float64(value)
+	case int64:
+		result = float64(value)
+	case uint:
+		result = float64(value)
+	case uint8:
+		result = float64(value)
+	case uint16:
+		result = float64(value)
+	case uint32:
+		result = float64(value)
+	case uint64:
+		result = float64(value)
+	default:
+		return 0, false
+	}
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0, false
+	}
+	return result, true
+}
+
 func envTokenName(value string) (string, bool) {
 	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
 		name := strings.TrimSuffix(strings.TrimPrefix(value, "${"), "}")
@@ -806,6 +926,64 @@ func positiveInt(value int) error {
 		return errors.New("must be positive")
 	}
 	return nil
+}
+
+func nonNegativeFloat(value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return errors.New("must be finite")
+	}
+	if value < 0 {
+		return errors.New("must not be negative")
+	}
+	return nil
+}
+
+func applyCodexSafetyDefaults(cfg *Codex) {
+	if strings.TrimSpace(cfg.ApprovalPolicy) == "" {
+		cfg.ApprovalPolicy = DefaultCodexApprovalPolicy
+	}
+	if strings.TrimSpace(cfg.ThreadSandbox) == "" {
+		cfg.ThreadSandbox = DefaultCodexThreadSandbox
+	}
+	if len(cfg.TurnSandboxPolicy) == 0 {
+		cfg.TurnSandboxPolicy = map[string]any{"type": "workspaceWrite"}
+	}
+}
+
+func normalizedPolicy(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "")
+	value = strings.ReplaceAll(value, "_", "")
+	return value
+}
+
+func stringFromMap(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
+}
+
+func inheritsAllShellEnvironment(policy map[string]any) bool {
+	for _, key := range []string{"shell_environment_policy", "shellEnvironmentPolicy"} {
+		raw, ok := policy[key]
+		if !ok {
+			continue
+		}
+		nested, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if normalizedPolicy(stringFromMap(nested, "inherit")) == "all" {
+			return true
+		}
+	}
+	return false
 }
 
 func validPort(value int) error {
