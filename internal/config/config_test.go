@@ -165,6 +165,38 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	}
 }
 
+func TestFromWorkflowParsesIssueFilterExtension(t *testing.T) {
+	raw := minimalRawConfig("literal-token", "symphony-go")
+	raw["tracker"].(map[string]any)["issue_filter"] = map[string]any{
+		"require_labels":                   []any{"repo:api", "security"},
+		"reject_labels":                    []any{"repo:web", "cross-repo"},
+		"require_any_labels":               []any{"low-risk", "migration"},
+		"require_exactly_one_label_prefix": "repo:",
+	}
+
+	cfg := mustConfig(t, workflow.Definition{
+		Path:           filepath.Join(t.TempDir(), "WORKFLOW.md"),
+		Config:         raw,
+		PromptTemplate: "Prompt",
+	})
+
+	want := IssueFilter{
+		RequireLabels:                []string{"repo:api", "security"},
+		RejectLabels:                 []string{"repo:web", "cross-repo"},
+		RequireAnyLabels:             []string{"low-risk", "migration"},
+		RequireExactlyOneLabelPrefix: "repo:",
+	}
+	if !reflect.DeepEqual(cfg.Tracker.IssueFilter, want) {
+		t.Fatalf("IssueFilter = %#v, want %#v", cfg.Tracker.IssueFilter, want)
+	}
+
+	clone := cfg.Clone()
+	clone.Tracker.IssueFilter.RequireLabels[0] = "repo:web"
+	if cfg.Tracker.IssueFilter.RequireLabels[0] != "repo:api" {
+		t.Fatalf("Clone() shared IssueFilter.RequireLabels backing array")
+	}
+}
+
 func TestFromWorkflowPreservesLiteralAPIKeyWithDollar(t *testing.T) {
 	cfg := mustConfig(t, workflow.Definition{
 		Path:           filepath.Join(t.TempDir(), "WORKFLOW.md"),
@@ -228,6 +260,10 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 			"api_key":         "$LINEAR_API_KEY",
 			"active_states":   []any{},
 			"terminal_states": []any{},
+			"issue_filter": map[string]any{
+				"require_labels":                   []any{"repo:api", 1},
+				"require_exactly_one_label_prefix": 42,
+			},
 		},
 		"polling": map[string]any{
 			"interval_ms": 0,
@@ -270,6 +306,8 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 		"tracker.api_key",
 		"tracker.active_states",
 		"tracker.terminal_states",
+		"tracker.issue_filter.require_labels[1]",
+		"tracker.issue_filter.require_exactly_one_label_prefix",
 		"polling.interval_ms",
 		"server.port",
 		"workspace.root",
