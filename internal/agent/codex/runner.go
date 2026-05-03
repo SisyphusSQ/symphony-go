@@ -60,6 +60,7 @@ func (r *Runner) RunTurn(ctx context.Context, req agent.TurnRequest) (agent.Turn
 			TotalTokens:           result.Usage.TotalTokens,
 			CachedInputTokens:     result.Usage.CachedInputTokens,
 		},
+		Events: mapEvents(result.Events),
 	}, err
 }
 
@@ -101,4 +102,23 @@ func codexConfigIsZero(cfg config.Codex) bool {
 		cfg.ReadTimeout == 0 &&
 		cfg.TurnTimeout == 0 &&
 		cfg.StallTimeout == 0
+}
+
+func mapEvents(events []Event) []agent.Event {
+	if len(events) == 0 {
+		return nil
+	}
+	mapped := make([]agent.Event, 0, len(events))
+	for _, event := range events {
+		mapped = append(mapped, agent.Event{
+			Kind:      string(event.Kind),
+			Method:    event.Method,
+			Timestamp: event.Timestamp,
+			ThreadID:  event.ThreadID,
+			TurnID:    event.TurnID,
+			Message:   event.Message,
+			Payload:   string(event.Payload),
+		})
+	}
+	return mapped
 }

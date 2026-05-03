@@ -18,6 +18,7 @@
 15. [TOO-131] 新增 opt-in 真实 Linear/Codex dogfood profile，提供默认显式 skipped 的验证入口、受控 workflow 默认值、runbook、conformance 结果和 unblock steps。
 16. [TOO-132] 新增 SQLite-backed durable state store，覆盖 runs、sessions、retry queue、agent events、startup crash recovery、claim/lease 与 optional `state_store` config。
 17. [TOO-133] 新增单实例 operator controls 与本地 HTTP status surface，覆盖 pause/resume/drain、cancel/retry、health/ready/runs/metrics endpoints、`--port` precedence 和 loopback bind 默认值。
+18. [TOO-134] 新增 production baseline safety controls，覆盖 safe Codex sandbox defaults、secret redaction、redacted audit events、tool-call audit 和 per-issue runtime/token/estimated-cost guardrails。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
