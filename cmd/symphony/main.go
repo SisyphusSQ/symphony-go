@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
 	"github.com/SisyphusSQ/symphony-go/internal/workflow"
 )
 
@@ -58,6 +59,10 @@ func newRunCommand() *cobra.Command {
 			if err := workflow.RequireReadable(path); err != nil {
 				return fmt.Errorf("startup failed: %w", err)
 			}
+			runtime, err := orchestrator.NewRuntime(path)
+			if err != nil {
+				return fmt.Errorf("startup failed: %w", err)
+			}
 
 			details := ""
 			if opts.port != 0 {
@@ -67,8 +72,11 @@ func newRunCommand() *cobra.Command {
 				details += fmt.Sprintf("; instance %q", opts.instance)
 			}
 			cmd.Printf("workflow %q passed startup validation%s\n", path, details)
-			cmd.Println("orchestrator runtime is not implemented in this slice; no workers started")
-			return nil
+			if err := runtime.DispatchReady(); err != nil {
+				cmd.Printf("orchestrator runtime loaded; dispatch dependencies are not configured in this CLI slice: %v\n", err)
+				return nil
+			}
+			return runtime.Run(cmd.Context())
 		},
 	}
 
