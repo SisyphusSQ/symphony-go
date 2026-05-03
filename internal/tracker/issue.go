@@ -1,6 +1,16 @@
 package tracker
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// Client is the read-only tracker surface consumed by the future orchestrator.
+type Client interface {
+	FetchCandidateIssues(ctx context.Context) ([]Issue, error)
+	FetchIssuesByStates(ctx context.Context, stateNames []string) ([]Issue, error)
+	FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]Issue, error)
+}
 
 // Issue is the normalized tracker record consumed by orchestration and prompts.
 type Issue struct {
