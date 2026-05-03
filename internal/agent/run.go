@@ -46,6 +46,7 @@ type RunRequest struct {
 	Prompt         string
 	PromptTemplate string
 	MaxTurns       int
+	Tracker        config.Tracker
 	Codex          config.Codex
 }
 
@@ -58,6 +59,7 @@ type TurnRequest struct {
 	Prompt        string
 	TurnNumber    int
 	MaxTurns      int
+	Tracker       config.Tracker
 	Codex         config.Codex
 }
 
@@ -145,6 +147,7 @@ func (runner *IssueRunner) Run(ctx context.Context, req RunRequest) (RunResult, 
 			Prompt:        prompt,
 			TurnNumber:    turnNumber,
 			MaxTurns:      normalized.MaxTurns,
+			Tracker:       normalized.Tracker,
 			Codex:         normalized.Codex,
 		})
 

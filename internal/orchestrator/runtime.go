@@ -442,6 +442,7 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 		Prompt:         cfg.PromptBody,
 		PromptTemplate: cfg.PromptBody,
 		MaxTurns:       cfg.Agent.MaxTurns,
+		Tracker:        cfg.Tracker,
 		Codex:          cfg.Codex,
 	})
 	sessionID = result.SessionID

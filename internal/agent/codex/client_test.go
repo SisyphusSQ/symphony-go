@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -124,6 +126,47 @@ func TestClientRunRejectsUnsupportedServerRequest(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	requireEvent(t, result.Events, EventUnsupportedRequest)
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q", result.Status)
+	}
+}
+
+func TestClientRunHandlesLinearGraphQLToolCall(t *testing.T) {
+	linearServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "linear-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode Linear request: %v", err)
+		}
+		if request.Query == "" || request.Variables["id"] != "TOO-128" {
+			t.Fatalf("Linear request = %#v", request)
+		}
+		_, _ = w.Write([]byte(`{"data":{"issue":{"identifier":"TOO-128"}}}`))
+	}))
+	defer linearServer.Close()
+
+	workspace := t.TempDir()
+	cfg := testCodexConfig(helperCommand(), 2*time.Second)
+	client := NewClient(WithEnv(
+		"SYMPHONY_FAKE_CODEX=1",
+		"SYMPHONY_FAKE_CODEX_MODE=linear-tool-call",
+		"SYMPHONY_FAKE_EXPECT_ENV=present",
+	))
+	result, err := client.Run(context.Background(), RunRequest{
+		Config:        cfg,
+		Tracker:       config.Tracker{Kind: config.TrackerKindLinear, Endpoint: linearServer.URL, APIKey: "linear-token"},
+		WorkspacePath: workspace,
+		Prompt:        "handle TOO-128",
+		IssueKey:      "TOO-128",
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
 	if result.Status != "completed" {
 		t.Fatalf("Status = %q", result.Status)
 	}
@@ -292,6 +335,9 @@ func runFakeCodexAppServer() error {
 	if err != nil {
 		return err
 	}
+	if err := assertInitialize(initialize.Params, mode); err != nil {
+		return err
+	}
 	if mode == "read-timeout" {
 		time.Sleep(time.Second)
 		return nil
@@ -312,7 +358,7 @@ func runFakeCodexAppServer() error {
 	if err != nil {
 		return err
 	}
-	if err := assertThreadStart(threadStart.Params); err != nil {
+	if err := assertThreadStart(threadStart.Params, mode); err != nil {
 		return err
 	}
 	if err := write(map[string]any{
@@ -328,7 +374,7 @@ func runFakeCodexAppServer() error {
 	if err != nil {
 		return err
 	}
-	if err := assertTurnStart(turnStart.Params); err != nil {
+	if err := assertTurnStart(turnStart.Params, mode); err != nil {
 		return err
 	}
 	if err := write(map[string]any{
@@ -348,7 +394,13 @@ func runFakeCodexAppServer() error {
 		if err := write(map[string]any{
 			"id":     99,
 			"method": "item/tool/call",
-			"params": map[string]any{"name": "linear_graphql"},
+			"params": map[string]any{
+				"threadId":  "thread-1",
+				"turnId":    "turn-1",
+				"callId":    "call-1",
+				"tool":      "linear_graphql",
+				"arguments": map[string]any{"query": "{ viewer { id } }"},
+			},
 		}); err != nil {
 			return err
 		}
@@ -356,9 +408,37 @@ func runFakeCodexAppServer() error {
 		if err != nil {
 			return err
 		}
-		if unsupportedResponse.ID != 99 || unsupportedResponse.Error == nil ||
-			unsupportedResponse.Error.Code != jsonRPCUnsupported {
+		if unsupportedResponse.ID != 99 || unsupportedResponse.Result == nil ||
+			unsupportedResponse.Result.Success {
 			return fmt.Errorf("unsupported response = %#v", unsupportedResponse)
+		}
+	}
+
+	if mode == "linear-tool-call" {
+		if err := write(map[string]any{
+			"id":     99,
+			"method": "item/tool/call",
+			"params": map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"callId":   "call-1",
+				"tool":     "linear_graphql",
+				"arguments": map[string]any{
+					"query":     "query Issue($id: String!) { issue(id: $id) { identifier } }",
+					"variables": map[string]any{"id": "TOO-128"},
+				},
+			},
+		}); err != nil {
+			return err
+		}
+		toolResponse, err := readAny()
+		if err != nil {
+			return err
+		}
+		if toolResponse.ID != 99 || toolResponse.Result == nil || !toolResponse.Result.Success ||
+			len(toolResponse.Result.ContentItems) != 1 ||
+			!strings.Contains(toolResponse.Result.ContentItems[0].Text, "TOO-128") {
+			return fmt.Errorf("tool response = %#v", toolResponse)
 		}
 	}
 
@@ -396,6 +476,13 @@ type fakeAnyMessage struct {
 	ID     int            `json:"id"`
 	Method string         `json:"method"`
 	Error  *responseError `json:"error"`
+	Result *struct {
+		Success      bool `json:"success"`
+		ContentItems []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"contentItems"`
+	} `json:"result"`
 }
 
 func tokenUsage(input int, output int, total int) map[string]any {
@@ -408,7 +495,25 @@ func tokenUsage(input int, output int, total int) map[string]any {
 	}
 }
 
-func assertThreadStart(raw json.RawMessage) error {
+func assertInitialize(raw json.RawMessage, mode string) error {
+	var params struct {
+		Capabilities struct {
+			ExperimentalAPI bool `json:"experimentalApi"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return err
+	}
+	if mode == "linear-tool-call" && !params.Capabilities.ExperimentalAPI {
+		return fmt.Errorf("experimentalApi = false, want true")
+	}
+	if mode != "linear-tool-call" && params.Capabilities.ExperimentalAPI {
+		return fmt.Errorf("experimentalApi = true, want false")
+	}
+	return nil
+}
+
+func assertThreadStart(raw json.RawMessage, mode string) error {
 	var params map[string]any
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return err
@@ -426,10 +531,24 @@ func assertThreadStart(raw json.RawMessage) error {
 	if params["sandbox"] != "workspace-write" {
 		return fmt.Errorf("sandbox = %v", params["sandbox"])
 	}
+	if mode == "linear-tool-call" {
+		tools, ok := params["dynamicTools"].([]any)
+		if !ok || len(tools) != 1 {
+			return fmt.Errorf("dynamicTools = %#v", params["dynamicTools"])
+		}
+		tool, ok := tools[0].(map[string]any)
+		if !ok || tool["name"] != "linear_graphql" || tool["inputSchema"] == nil {
+			return fmt.Errorf("dynamic tool spec = %#v", tools[0])
+		}
+		return nil
+	}
+	if _, ok := params["dynamicTools"]; ok {
+		return fmt.Errorf("dynamicTools unexpectedly present: %#v", params["dynamicTools"])
+	}
 	return nil
 }
 
-func assertTurnStart(raw json.RawMessage) error {
+func assertTurnStart(raw json.RawMessage, mode string) error {
 	var params struct {
 		ThreadID      string           `json:"threadId"`
 		CWD           string           `json:"cwd"`
@@ -453,7 +572,11 @@ func assertTurnStart(raw json.RawMessage) error {
 	if params.SandboxPolicy["type"] != "workspaceWrite" {
 		return fmt.Errorf("sandboxPolicy = %#v", params.SandboxPolicy)
 	}
-	if len(params.Input) != 1 || params.Input[0]["type"] != "text" || params.Input[0]["text"] != "handle TOO-126" {
+	wantPrompt := "handle TOO-126"
+	if mode == "linear-tool-call" {
+		wantPrompt = "handle TOO-128"
+	}
+	if len(params.Input) != 1 || params.Input[0]["type"] != "text" || params.Input[0]["text"] != wantPrompt {
 		return fmt.Errorf("input = %#v", params.Input)
 	}
 	return nil
