@@ -57,6 +57,26 @@ type PrepareRequest struct {
 	WorkflowPath    string
 }
 
+// CleanupRequest contains issue metadata needed to locate a terminal workspace.
+type CleanupRequest struct {
+	IssueID         string
+	IssueIdentifier string
+	WorkflowPath    string
+}
+
+// CleanupTarget is the resolved workspace path for a terminal cleanup attempt.
+type CleanupTarget struct {
+	Workspace
+	Exists          bool
+	IsRealDirectory bool
+}
+
+// CleanupResult records the outcome of a workspace removal attempt.
+type CleanupResult struct {
+	Target  CleanupTarget
+	Removed bool
+}
+
 // Manager creates and reuses per-issue workspaces under one configured root.
 type Manager struct {
 	root string
@@ -130,6 +150,78 @@ func (m *Manager) Prepare(req PrepareRequest) (Workspace, error) {
 	return result, nil
 }
 
+// CleanupTarget resolves the per-issue workspace path without creating any
+// filesystem entries. Missing workspace roots or issue directories are treated
+// as no-op cleanup targets.
+func (m *Manager) CleanupTarget(req CleanupRequest) (CleanupTarget, error) {
+	if m == nil || m.root == "" {
+		return CleanupTarget{}, fmt.Errorf("%w: manager root is empty", ErrInvalidWorkspaceRoot)
+	}
+
+	key, err := SanitizeIdentifier(req.IssueIdentifier)
+	if err != nil {
+		return CleanupTarget{}, err
+	}
+	workspacePath, err := m.workspacePathForKey(key)
+	if err != nil {
+		return CleanupTarget{}, err
+	}
+
+	target := CleanupTarget{
+		Workspace: Workspace{
+			Path:         workspacePath,
+			Key:          key,
+			IssueID:      req.IssueID,
+			IssueKey:     req.IssueIdentifier,
+			WorkflowPath: req.WorkflowPath,
+			MetadataPath: filepath.Join(workspacePath, MetadataFilename),
+		},
+	}
+
+	info, err := os.Lstat(workspacePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return target, nil
+	}
+	if err != nil {
+		return CleanupTarget{}, fmt.Errorf("inspect workspace path %q: %w", workspacePath, err)
+	}
+
+	target.Exists = true
+	target.IsRealDirectory = isRealDirectory(info)
+	return target, nil
+}
+
+// Remove deletes a previously resolved cleanup target. It is safe to call for
+// missing targets and removes only the sanitized path under the manager root.
+func (m *Manager) Remove(target CleanupTarget) (CleanupResult, error) {
+	if m == nil || m.root == "" {
+		return CleanupResult{}, fmt.Errorf("%w: manager root is empty", ErrInvalidWorkspaceRoot)
+	}
+	if target.Path == "" || !isChildPath(m.root, filepath.Clean(target.Path)) {
+		return CleanupResult{}, fmt.Errorf("%w: %q is not under %q", ErrUnsafeWorkspacePath, target.Path, m.root)
+	}
+
+	result := CleanupResult{Target: target}
+	if !target.Exists {
+		return result, nil
+	}
+	if err := os.RemoveAll(target.Path); err != nil {
+		return result, fmt.Errorf("remove workspace path %q: %w", target.Path, err)
+	}
+	result.Removed = true
+	return result, nil
+}
+
+// Cleanup resolves and removes a terminal workspace without running lifecycle
+// hooks. Orchestrator code should prefer CleanupTarget + before_remove + Remove.
+func (m *Manager) Cleanup(req CleanupRequest) (CleanupResult, error) {
+	target, err := m.CleanupTarget(req)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	return m.Remove(target)
+}
+
 // SanitizeIdentifier converts an issue identifier into a deterministic workspace key.
 func SanitizeIdentifier(identifier string) (string, error) {
 	if identifier == "" {
@@ -170,6 +262,19 @@ func normalizeRoot(root string) (string, error) {
 		return "", fmt.Errorf("%w: root must not be the filesystem root", ErrInvalidWorkspaceRoot)
 	}
 	return absolute, nil
+}
+
+func (m *Manager) workspacePathForKey(key string) (string, error) {
+	workspacePath := filepath.Clean(filepath.Join(m.root, key))
+	workspacePath, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return "", fmt.Errorf("%w: cannot normalize %q: %w", ErrUnsafeWorkspacePath, workspacePath, err)
+	}
+	workspacePath = filepath.Clean(workspacePath)
+	if !isChildPath(m.root, workspacePath) {
+		return "", fmt.Errorf("%w: %q is not under %q", ErrUnsafeWorkspacePath, workspacePath, m.root)
+	}
+	return workspacePath, nil
 }
 
 func ensureIssueDirectory(path string) (bool, error) {
