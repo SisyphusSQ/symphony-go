@@ -23,6 +23,7 @@ const (
 	EventOrchestratorRunFailed       EventType = "orchestrator.run.failed"
 	EventOrchestratorRunStopped      EventType = "orchestrator.run.stopped"
 	EventOrchestratorMissingDeps     EventType = "orchestrator.dependencies.missing"
+	EventOperatorControl             EventType = "operator.control"
 
 	EventTrackerCandidateFetchFailed EventType = "tracker.candidates.fetch_failed"
 	EventTrackerStateRefreshFailed   EventType = "tracker.states.refresh_failed"

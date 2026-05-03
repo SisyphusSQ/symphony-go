@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SisyphusSQ/symphony-go/internal/config"
 )
 
 func TestRootHelp(t *testing.T) {
@@ -149,13 +151,14 @@ func TestRunPerformsStartupValidationWithoutStartingRuntime(t *testing.T) {
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	writeWorkflow(t, workflowPath)
 
-	output, err := executeCommand(t, "run", "--port", "1234", "--instance", "dev", workflowPath)
+	output, err := executeCommand(t, "run", "--port", "0", "--instance", "dev", workflowPath)
 	if err != nil {
 		t.Fatalf("expected run startup validation to succeed: %v", err)
 	}
 
 	for _, want := range []string{
-		`workflow "` + workflowPath + `" passed startup validation; server.port override 1234; instance "dev"`,
+		`workflow "` + workflowPath + `" passed startup validation; server.port 0 from cli; instance "dev"`,
+		"operator HTTP server listening on http://127.0.0.1:",
 		"orchestrator runtime loaded; dispatch dependencies are not configured in this CLI slice",
 	} {
 		if !strings.Contains(output, want) {
@@ -178,6 +181,76 @@ func TestRunSurfacesStartupValidationFailure(t *testing.T) {
 	}
 }
 
+func TestResolveServerOptionsHonorsPortPrecedence(t *testing.T) {
+	cfg := configForServerTest(4567)
+
+	tests := []struct {
+		name                   string
+		workflowPortConfigured bool
+		cliPort                int
+		cliPortSet             bool
+		wantEnabled            bool
+		wantPort               int
+		wantSource             string
+	}{
+		{
+			name:                   "disabled without cli or workflow server port",
+			workflowPortConfigured: false,
+			wantEnabled:            false,
+		},
+		{
+			name:                   "workflow port enables server",
+			workflowPortConfigured: true,
+			wantEnabled:            true,
+			wantPort:               4567,
+			wantSource:             "workflow",
+		},
+		{
+			name:                   "cli port overrides workflow port",
+			workflowPortConfigured: true,
+			cliPort:                1234,
+			cliPortSet:             true,
+			wantEnabled:            true,
+			wantPort:               1234,
+			wantSource:             "cli",
+		},
+		{
+			name:                   "cli ephemeral port overrides workflow port",
+			workflowPortConfigured: true,
+			cliPort:                0,
+			cliPortSet:             true,
+			wantEnabled:            true,
+			wantPort:               0,
+			wantSource:             "cli",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveServerOptions(
+				cfg,
+				tt.workflowPortConfigured,
+				tt.cliPort,
+				tt.cliPortSet,
+				"dev",
+			)
+			if err != nil {
+				t.Fatalf("resolveServerOptions() error = %v", err)
+			}
+			if got.Enabled != tt.wantEnabled || got.Port != tt.wantPort || got.Source != tt.wantSource ||
+				got.BindHost != "127.0.0.1" || got.Instance != "dev" {
+				t.Fatalf("server options = %#v", got)
+			}
+		})
+	}
+}
+
+func TestResolveServerOptionsRejectsInvalidCLIPort(t *testing.T) {
+	if _, err := resolveServerOptions(configForServerTest(0), false, -1, true, ""); err == nil {
+		t.Fatal("expected negative CLI port to fail")
+	}
+}
+
 func executeCommand(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
@@ -190,6 +263,10 @@ func executeCommand(t *testing.T, args ...string) (string, error) {
 
 	err := cmd.Execute()
 	return stdout.String() + stderr.String(), err
+}
+
+func configForServerTest(port int) config.Config {
+	return config.Config{Server: config.Server{Port: port}}
 }
 
 func writeWorkflow(t *testing.T, path string) {
