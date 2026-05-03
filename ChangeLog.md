@@ -12,6 +12,7 @@
 9. [TOO-125] 新增 orchestrator retry queue、active-run reconciliation 与 terminal workspace cleanup，支持 normal exit continuation retry、exponential backoff cap、non-active release 和 `before_remove` cleanup hook。
 10. [TOO-126] 新增 Codex app-server JSONL client 与 runner adapter，覆盖 subprocess cwd/env、initialize/thread/turn protocol、token usage、timeouts、process error 和 unsupported server request fake 测试。
 11. [TOO-127] 新增 agent runner strict prompt rendering、attempt/max turns orchestration、Codex timeout/cwd wiring 与 fake client metadata 测试。
+12. [TOO-128] 新增 raw `linear_graphql` agent tool，复用 Linear tracker endpoint/auth，覆盖 structured errors、GraphQL error failure 和 Codex dynamic tool wiring fake 测试。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。

@@ -42,6 +42,7 @@ func (r *Runner) RunTurn(ctx context.Context, req agent.TurnRequest) (agent.Turn
 	cfg := mergeCodexConfig(r.cfg, req.Codex)
 	result, err := client.Run(ctx, RunRequest{
 		Config:        cfg,
+		Tracker:       req.Tracker,
 		WorkspacePath: req.WorkspacePath,
 		Prompt:        req.Prompt,
 		IssueKey:      req.IssueKey,

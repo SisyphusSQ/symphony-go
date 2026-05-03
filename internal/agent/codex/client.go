@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SisyphusSQ/symphony-go/internal/config"
+	"github.com/SisyphusSQ/symphony-go/internal/tools/lineargraphql"
 )
 
 const (
@@ -144,6 +145,7 @@ type Result struct {
 // RunRequest describes one app-server thread + turn execution.
 type RunRequest struct {
 	Config        config.Codex
+	Tracker       config.Tracker
 	WorkspacePath string
 	Prompt        string
 	IssueKey      string
@@ -256,15 +258,17 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (Result, error) {
 		close(waitCh)
 	}()
 
+	linearTool := newLinearGraphQLTool(req.Tracker)
 	state := &runState{
-		req:       req,
-		stdin:     stdin,
-		waitCh:    waitCh,
-		messages:  messages,
-		cancel:    cancelProc,
-		stderr:    &stderrBuf,
-		now:       c.now,
-		processID: cmd.Process.Pid,
+		req:        req,
+		stdin:      stdin,
+		waitCh:     waitCh,
+		messages:   messages,
+		cancel:     cancelProc,
+		stderr:     &stderrBuf,
+		now:        c.now,
+		processID:  cmd.Process.Pid,
+		linearTool: linearTool,
 		result: Result{
 			Events: []Event{{
 				Kind:      EventProcessStarted,
@@ -280,7 +284,7 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (Result, error) {
 			"version": c.clientVersion,
 		},
 		"capabilities": map[string]any{
-			"experimentalApi": false,
+			"experimentalApi": linearTool != nil,
 		},
 	}, req.Config.ReadTimeout); err != nil {
 		state.recordError(err)
@@ -288,7 +292,7 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (Result, error) {
 		return state.result, err
 	}
 
-	threadResult, err := state.call(ctx, 2, "thread/start", threadStartParams(req), req.Config.ReadTimeout)
+	threadResult, err := state.call(ctx, 2, "thread/start", threadStartParams(req, linearTool), req.Config.ReadTimeout)
 	if err != nil {
 		state.recordError(err)
 		state.stop()
@@ -344,8 +348,9 @@ type runState struct {
 	stderr   *limitedBuffer
 	now      func() time.Time
 
-	processID int
-	result    Result
+	processID  int
+	linearTool *lineargraphql.Tool
+	result     Result
 }
 
 func (s *runState) call(
@@ -402,7 +407,7 @@ func (s *runState) streamTurn(ctx context.Context) error {
 			return err
 		}
 		if msg.Method != "" && len(msg.ID) > 0 {
-			if err := s.rejectServerRequest(msg); err != nil {
+			if err := s.handleServerRequest(ctx, msg); err != nil {
 				return err
 			}
 			continue
@@ -565,6 +570,68 @@ func (s *runState) rejectServerRequest(msg rpcMessage) error {
 	return nil
 }
 
+func (s *runState) handleServerRequest(ctx context.Context, msg rpcMessage) error {
+	if msg.Method == "item/tool/call" {
+		return s.handleDynamicToolCall(ctx, msg)
+	}
+	return s.rejectServerRequest(msg)
+}
+
+func (s *runState) handleDynamicToolCall(ctx context.Context, msg rpcMessage) error {
+	var params dynamicToolCallParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.respondDynamicToolFailure(msg.ID, "invalid_tool_call", err.Error())
+	}
+	if params.Tool != lineargraphql.Name || s.linearTool == nil {
+		s.emit(Event{
+			Kind:    EventUnsupportedRequest,
+			Method:  msg.Method,
+			Message: "unsupported dynamic tool: " + params.Tool,
+			Payload: msg.Raw,
+		})
+		return s.respondDynamicToolFailure(msg.ID, "unsupported_tool", "unsupported dynamic tool: "+params.Tool)
+	}
+	result := s.linearTool.ExecuteJSON(ctx, params.Arguments)
+	return s.respondDynamicToolResult(msg.ID, result.Success, result.Text())
+}
+
+func (s *runState) respondDynamicToolFailure(id json.RawMessage, code string, message string) error {
+	output := map[string]any{
+		"success": false,
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return err
+	}
+	return s.respondDynamicToolResult(id, false, string(data))
+}
+
+func (s *runState) respondDynamicToolResult(id json.RawMessage, success bool, text string) error {
+	response := successResponse{
+		ID: id,
+		Result: dynamicToolCallResponse{
+			Success: success,
+			ContentItems: []dynamicToolCallOutputContentItem{{
+				Type: "inputText",
+				Text: text,
+			}},
+		},
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if _, err := s.stdin.Write(data); err != nil {
+		return &Error{Kind: ErrorWriteFailed, Phase: "item/tool/call", Err: err}
+	}
+	return nil
+}
+
 func (s *runState) emit(event Event) {
 	event.Timestamp = s.now().UTC()
 	event.ProcessID = s.processID
@@ -635,6 +702,30 @@ type errorResponse struct {
 	Error responseError   `json:"error"`
 }
 
+type successResponse struct {
+	ID     json.RawMessage `json:"id"`
+	Result any             `json:"result"`
+}
+
+type dynamicToolCallParams struct {
+	Arguments json.RawMessage `json:"arguments"`
+	CallID    string          `json:"callId"`
+	Namespace *string         `json:"namespace"`
+	ThreadID  string          `json:"threadId"`
+	Tool      string          `json:"tool"`
+	TurnID    string          `json:"turnId"`
+}
+
+type dynamicToolCallOutputContentItem struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type dynamicToolCallResponse struct {
+	ContentItems []dynamicToolCallOutputContentItem `json:"contentItems"`
+	Success      bool                               `json:"success"`
+}
+
 type rpcMessage struct {
 	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
@@ -697,11 +788,14 @@ func withCodexDefaults(cfg config.Codex) config.Codex {
 	return cfg
 }
 
-func threadStartParams(req RunRequest) map[string]any {
+func threadStartParams(req RunRequest, linearTool *lineargraphql.Tool) map[string]any {
 	params := map[string]any{
 		"cwd":         req.WorkspacePath,
 		"serviceName": "symphony-go",
 		"ephemeral":   true,
+	}
+	if linearTool != nil {
+		params["dynamicTools"] = []map[string]any{lineargraphql.Spec()}
 	}
 	if req.Config.ApprovalPolicy != "" {
 		params["approvalPolicy"] = req.Config.ApprovalPolicy
@@ -830,6 +924,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func newLinearGraphQLTool(cfg config.Tracker) *lineargraphql.Tool {
+	if !lineargraphql.Available(cfg) {
+		return nil
+	}
+	tool, err := lineargraphql.NewFromTrackerConfig(cfg)
+	if err != nil {
+		return nil
+	}
+	return tool
 }
 
 func wrapError(kind ErrorKind, phase string, err error, stderr string) error {
