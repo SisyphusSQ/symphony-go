@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/SisyphusSQ/symphony-go/internal/agent"
 	"github.com/SisyphusSQ/symphony-go/internal/config"
 	"github.com/SisyphusSQ/symphony-go/internal/hooks"
+	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	"github.com/SisyphusSQ/symphony-go/internal/policy"
 	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker"
@@ -42,6 +44,7 @@ type Dependencies struct {
 	Workspace WorkspaceManager
 	Hooks     HookRunner
 	Runner    agent.Runner
+	Logger    observability.Logger
 	Clock     func() time.Time
 }
 
@@ -73,6 +76,9 @@ func NewRuntimeWithDependencies(
 	}
 	if deps.Clock == nil {
 		deps.Clock = time.Now
+	}
+	if deps.Logger == nil {
+		deps.Logger = observability.DiscardLogger()
 	}
 	return &Runtime{
 		status:   StatusRunning,
@@ -129,6 +135,54 @@ func (r *Runtime) RunningRecords() []RunRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state.runningRecords()
+}
+
+// Snapshot returns a read-only operator view of active runs, queued retries,
+// and the current orchestrator lifecycle state.
+func (r *Runtime) Snapshot() observability.Snapshot {
+	now := r.deps.Clock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	activeRuns := make([]observability.RunSnapshot, 0, len(r.state.running))
+	for _, record := range r.state.running {
+		activeRuns = append(activeRuns, observability.RunSnapshot{
+			IssueID:         record.IssueID,
+			IssueIdentifier: record.IssueKey,
+			SessionID:       record.SessionID,
+			State:           record.State,
+			RunStatus:       observability.RunStatusRunning,
+			Attempt:         record.Attempt,
+			WorkspacePath:   record.WorkspacePath,
+			StartedAt:       record.StartedAt,
+			SecondsRunning:  now.Sub(record.StartedAt).Seconds(),
+		})
+	}
+	sort.Slice(activeRuns, func(i, j int) bool {
+		return snapshotRunKey(activeRuns[i]) < snapshotRunKey(activeRuns[j])
+	})
+
+	retryQueue := make([]observability.RetrySnapshot, 0, len(r.state.retries))
+	for _, entry := range r.state.retries {
+		retryQueue = append(retryQueue, observability.RetrySnapshot{
+			IssueID:         entry.IssueID,
+			IssueIdentifier: entry.IssueKey,
+			RetryState:      observability.RetryStateForError(entry.Error),
+			Attempt:         entry.Attempt,
+			DueAt:           entry.DueAt,
+			Error:           entry.Error,
+		})
+	}
+	sort.Slice(retryQueue, func(i, j int) bool {
+		return snapshotRetryKey(retryQueue[i]) < snapshotRetryKey(retryQueue[j])
+	})
+
+	return observability.Snapshot{
+		GeneratedAt:    now,
+		LifecycleState: string(r.status),
+		ActiveRuns:     activeRuns,
+		RetryQueue:     retryQueue,
+	}
 }
 
 // ReloadWorkflowIfChanged updates the effective config for future dispatch
@@ -286,12 +340,26 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		summary.DispatchErr = err
+		r.emitEvent(ctx, observability.Event{
+			Level:     observability.LevelWarn,
+			Type:      observability.EventOrchestratorRunFailed,
+			Message:   "action=tick run_status=failed",
+			RunStatus: observability.RunStatusFailed,
+			Error:     err.Error(),
+		})
 		return summary, err
 	}
 
 	cfg := r.FutureDispatchConfig()
 	if err := r.DispatchReady(); err != nil {
 		summary.DispatchErr = err
+		r.emitEvent(ctx, observability.Event{
+			Level:     observability.LevelError,
+			Type:      observability.EventOrchestratorMissingDeps,
+			Message:   "action=dispatch_ready run_status=failed",
+			RunStatus: observability.RunStatusFailed,
+			Error:     err.Error(),
+		})
 		return summary, err
 	}
 	summary.Reconciliation = r.reconcileRunning(ctx, cfg)
@@ -306,6 +374,12 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 	issues, err := r.deps.Tracker.FetchCandidateIssues(ctx)
 	if err != nil {
 		summary.TrackerErr = err
+		r.emitEvent(ctx, observability.Event{
+			Level:   observability.LevelError,
+			Type:    observability.EventTrackerCandidateFetchFailed,
+			Message: "action=fetch_candidates completed=false",
+			Error:   err.Error(),
+		})
 		if len(dueRetries) > 0 {
 			summary.Retries.Requeued = r.requeueRetriesAfterFetchError(cfg, dueRetries, now)
 		}
@@ -345,6 +419,7 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 				IssueKey: issue.Identifier,
 				State:    issue.State,
 			})
+			r.emitEvent(ctx, runEvent(issue, observability.EventOrchestratorRunDispatched, observability.RunStatusRunning, 0, "action=dispatch run_status=running"))
 			go r.runIssue(runCtx, cfg, issue, 0)
 		}
 	}
@@ -405,11 +480,14 @@ func (r *Runtime) tryStart(
 
 func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker.Issue, attempt int) {
 	var sessionID string
+	var metadata agent.RunMetadata
 	normalExit := false
 	exitErr := "worker exited without result"
 	defer func() {
-		r.completeRun(issue.ID, sessionID, normalExit, exitErr, cfg)
+		r.completeRun(ctx, issue.ID, sessionID, metadata, normalExit, exitErr, cfg)
 	}()
+
+	r.emitEvent(ctx, runEvent(issue, observability.EventOrchestratorRunStarted, observability.RunStatusRunning, attempt, "action=run_start run_status=running"))
 
 	ws, err := r.deps.Workspace.Prepare(workspace.PrepareRequest{
 		IssueID:         issue.ID,
@@ -418,18 +496,36 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 	})
 	if err != nil {
 		exitErr = err.Error()
+		r.emitEvent(ctx, runEventWithError(
+			issue,
+			observability.EventWorkspacePrepareFailed,
+			observability.RunStatusFailed,
+			attempt,
+			"action=workspace_prepare run_status=failed",
+			err,
+		))
 		return
 	}
 	r.mu.Lock()
 	r.state.updateWorkspace(issue.ID, ws.Path)
 	r.mu.Unlock()
+	r.emitEvent(ctx, runEventWithFields(
+		issue,
+		observability.EventWorkspacePrepared,
+		observability.RunStatusRunning,
+		attempt,
+		"action=workspace_prepare completed=true",
+		map[string]any{"workspace_path": ws.Path, "created_now": ws.CreatedNow},
+	))
 
 	if _, err := r.deps.Hooks.RunAfterCreate(ctx, ws.Path, ws.CreatedNow); err != nil {
 		exitErr = err.Error()
+		r.emitEvent(ctx, hookEvent(issue, hooks.AfterCreate, attempt, err))
 		return
 	}
 	if _, err := r.deps.Hooks.Run(ctx, hooks.BeforeRun, ws.Path); err != nil {
 		exitErr = err.Error()
+		r.emitEvent(ctx, hookEvent(issue, hooks.BeforeRun, attempt, err))
 		return
 	}
 
@@ -446,42 +542,92 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 		Codex:          cfg.Codex,
 	})
 	sessionID = result.SessionID
-	_, _ = r.deps.Hooks.Run(ctx, hooks.AfterRun, ws.Path)
+	metadata = result.Metadata
+	if sessionID == "" {
+		sessionID = metadata.SessionID
+	}
+	if metadata.SessionID == "" {
+		metadata.SessionID = sessionID
+	}
+	if _, err := r.deps.Hooks.Run(ctx, hooks.AfterRun, ws.Path); err != nil {
+		r.emitEvent(ctx, hookEvent(issue, hooks.AfterRun, attempt, err))
+	}
 	if runErr != nil {
 		exitErr = runErr.Error()
+		r.emitEvent(ctx, sessionRunEvent(
+			issue,
+			sessionID,
+			observability.EventAgentRunFailed,
+			observability.RunStatusFailed,
+			attempt,
+			"action=agent_run run_status=failed",
+			runErr,
+		))
 		return
 	}
+	r.emitEvent(ctx, sessionRunEvent(
+		issue,
+		sessionID,
+		observability.EventAgentRunCompleted,
+		observability.RunStatusCompleted,
+		attempt,
+		"action=agent_run run_status=completed",
+		nil,
+	))
 	normalExit = true
 	exitErr = ""
 }
 
 func (r *Runtime) completeRun(
+	ctx context.Context,
 	issueID string,
 	sessionID string,
+	metadata agent.RunMetadata,
 	normalExit bool,
 	exitErr string,
 	cfg config.Config,
 ) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	var event observability.Event
 
+	r.mu.Lock()
 	if sessionID != "" {
 		r.state.updateSession(issueID, sessionID)
 	}
 	record, ok := r.state.finish(issueID)
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
+	if sessionID == "" {
+		sessionID = record.SessionID
+	}
+	issue := tracker.Issue{ID: record.IssueID, Identifier: record.IssueKey, State: record.State}
 
 	now := r.deps.Clock()
 	if normalExit {
 		r.state.completed[issueID] = struct{}{}
-		r.state.scheduleRetry(runstate.Retry{
+		entry := runstate.Retry{
 			IssueID:  issueID,
 			IssueKey: record.IssueKey,
 			Attempt:  1,
 			DueAt:    now.Add(continuationRetryDelay),
-		})
+		}
+		r.state.scheduleRetry(entry)
+		dueAt := entry.DueAt
+		event = sessionRunEvent(
+			issue,
+			sessionID,
+			observability.EventRetryScheduled,
+			observability.RunStatusCompleted,
+			entry.Attempt,
+			"action=retry_schedule retry_state=continuation run_status=completed",
+			nil,
+		)
+		event.RetryState = observability.RetryStateContinuation
+		event.RetryAttempt = entry.Attempt
+		event.RetryDueAt = &dueAt
+		r.mu.Unlock()
+		r.emitEvent(ctx, event)
 		return
 	}
 
@@ -489,13 +635,41 @@ func (r *Runtime) completeRun(
 	if attempt < 1 {
 		attempt = 1
 	}
-	r.state.scheduleRetry(runstate.Retry{
+	entry := runstate.Retry{
 		IssueID:  issueID,
 		IssueKey: record.IssueKey,
 		Attempt:  attempt,
 		DueAt:    now.Add(failureRetryDelay(attempt, cfg.Agent.MaxRetryBackoff)),
 		Error:    exitErr,
-	})
+	}
+	r.state.scheduleRetry(entry)
+	dueAt := entry.DueAt
+	event = sessionRunEvent(
+		issue,
+		sessionID,
+		observability.EventRetryScheduled,
+		observability.RunStatusFailed,
+		entry.Attempt,
+		"action=retry_schedule retry_state=failure run_status=failed",
+		nil,
+	)
+	event.RetryState = observability.RetryStateFailure
+	event.RetryAttempt = entry.Attempt
+	event.RetryDueAt = &dueAt
+	event.Error = exitErr
+	if metadata.TurnCount > 0 {
+		event.Fields = map[string]any{
+			"turn_count":          metadata.TurnCount,
+			"input_tokens":        metadata.Usage.InputTokens,
+			"output_tokens":       metadata.Usage.OutputTokens,
+			"total_tokens":        metadata.Usage.TotalTokens,
+			"workspace_path":      metadata.WorkspacePath,
+			"issue_identifier":    metadata.IssueIdentifier,
+			"metadata_session_id": metadata.SessionID,
+		}
+	}
+	r.mu.Unlock()
+	r.emitEvent(ctx, event)
 }
 
 func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) ReconcileSummary {
@@ -515,6 +689,12 @@ func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) Recon
 	issues, err := r.deps.Tracker.FetchIssueStatesByIDs(ctx, ids)
 	if err != nil {
 		summary.TrackerErr = err
+		r.emitEvent(ctx, observability.Event{
+			Level:   observability.LevelError,
+			Type:    observability.EventTrackerStateRefreshFailed,
+			Message: "action=refresh_issue_states completed=false",
+			Error:   err.Error(),
+		})
 		return summary
 	}
 
@@ -549,6 +729,10 @@ func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) Recon
 				Reason:   "terminal_state",
 				Cleanup:  cleanup,
 			})
+			event := runEvent(issue, observability.EventOrchestratorRunStopped, observability.RunStatusStopped, stopped.Attempt, "action=reconcile_stop run_status=stopped")
+			event.SessionID = stopped.SessionID
+			event.Fields = map[string]any{"reason": "terminal_state"}
+			r.emitEvent(ctx, event)
 		case stateIn(cfg.Tracker.ActiveStates, issue.State):
 			r.mu.Lock()
 			r.state.updateIssue(issue)
@@ -560,7 +744,8 @@ func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) Recon
 				Attempt:  record.Attempt,
 			})
 		default:
-			if _, ok := r.stopRunning(record.IssueID); !ok {
+			stopped, ok := r.stopRunning(record.IssueID)
+			if !ok {
 				continue
 			}
 			summary.Stopped = append(summary.Stopped, StopSummary{
@@ -569,6 +754,10 @@ func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) Recon
 				State:    issue.State,
 				Reason:   "inactive_state",
 			})
+			event := runEvent(issue, observability.EventOrchestratorRunStopped, observability.RunStatusStopped, stopped.Attempt, "action=reconcile_stop run_status=stopped")
+			event.SessionID = stopped.SessionID
+			event.Fields = map[string]any{"reason": "inactive_state"}
+			r.emitEvent(ctx, event)
 		}
 	}
 	return summary
@@ -596,6 +785,12 @@ func (r *Runtime) CleanupTerminalWorkspaces(ctx context.Context) StartupCleanupS
 	issues, err := r.deps.Tracker.FetchIssuesByStates(ctx, cfg.Tracker.TerminalStates)
 	if err != nil {
 		summary.TrackerErr = err
+		r.emitEvent(ctx, observability.Event{
+			Level:   observability.LevelError,
+			Type:    observability.EventTrackerTerminalFetchFailed,
+			Message: "action=fetch_terminal_issues completed=false",
+			Error:   err.Error(),
+		})
 		return summary
 	}
 	summary.Issues = len(issues)
@@ -646,6 +841,31 @@ func (r *Runtime) cleanupIssueWorkspace(
 	result, err := r.deps.Workspace.Remove(target)
 	summary.Removed = result.Removed
 	summary.CleanupErr = err
+	eventType := observability.EventWorkspaceCleanup
+	level := observability.LevelInfo
+	message := "action=workspace_cleanup completed=true"
+	errorText := ""
+	if err != nil {
+		eventType = observability.EventWorkspaceCleanupFailed
+		level = observability.LevelError
+		message = "action=workspace_cleanup completed=false"
+		errorText = err.Error()
+	}
+	r.emitEvent(ctx, observability.Event{
+		Level:           level,
+		Type:            eventType,
+		Message:         message,
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		Error:           errorText,
+		Fields: map[string]any{
+			"workspace_path": target.Path,
+			"existed":        target.Exists,
+			"removed":        result.Removed,
+			"hook_error":     errorString(summary.HookErr),
+			"skipped_hook":   summary.SkippedHook,
+		},
+	})
 	return summary
 }
 
@@ -690,6 +910,12 @@ func (r *Runtime) handleDueRetries(
 				IssueKey: entry.IssueKey,
 				Reason:   "retry_issue_not_candidate",
 			})
+			r.emitEvent(ctx, retryEventFromEntry(
+				entry,
+				observability.EventRetryReleased,
+				observability.RetryStateReleased,
+				"action=retry_release retry_state=released reason=retry_issue_not_candidate",
+			))
 			continue
 		}
 
@@ -699,6 +925,15 @@ func (r *Runtime) handleDueRetries(
 		eligibility := policy.CheckEligibility(cfg.Tracker, issue, runtimeSnapshot)
 		if !eligibility.Allowed {
 			summary.Retries.Released = append(summary.Retries.Released, skipFromPolicy(issue, eligibility))
+			event := retryEventForIssue(
+				issue,
+				entry,
+				observability.EventRetryReleased,
+				observability.RetryStateReleased,
+				"action=retry_release retry_state=released",
+			)
+			event.Fields = map[string]any{"reason": string(eligibility.Reason)}
+			r.emitEvent(ctx, event)
 			continue
 		}
 
@@ -707,9 +942,27 @@ func (r *Runtime) handleDueRetries(
 			if skip.Reason == "global_concurrency_limit" || skip.Reason == "state_concurrency_limit" {
 				requeued := r.requeueRetryForSlots(cfg, issue, entry)
 				summary.Retries.Requeued = append(summary.Retries.Requeued, requeued)
+				event := retryEventForIssue(
+					issue,
+					requeued,
+					observability.EventRetryRequeued,
+					observability.RetryStateRequeued,
+					"action=retry_requeue retry_state=requeued",
+				)
+				event.Fields = map[string]any{"reason": skip.Reason}
+				r.emitEvent(ctx, event)
 				continue
 			}
 			summary.Retries.Released = append(summary.Retries.Released, skip)
+			event := retryEventForIssue(
+				issue,
+				entry,
+				observability.EventRetryReleased,
+				observability.RetryStateReleased,
+				"action=retry_release retry_state=released",
+			)
+			event.Fields = map[string]any{"reason": skip.Reason}
+			r.emitEvent(ctx, event)
 			continue
 		}
 
@@ -721,6 +974,13 @@ func (r *Runtime) handleDueRetries(
 		}
 		summary.Retries.Dispatched = append(summary.Retries.Dispatched, dispatch)
 		summary.Dispatched = append(summary.Dispatched, dispatch)
+		r.emitEvent(ctx, retryEventForIssue(
+			issue,
+			entry,
+			observability.EventRetryDispatched,
+			observability.RetryStateForError(entry.Error),
+			"action=retry_dispatch run_status=running",
+		))
 		go r.runIssue(runCtx, cfg, issue, entry.Attempt)
 	}
 }
@@ -805,6 +1065,153 @@ func (r *Runtime) shouldStopAfterTickError(ctx context.Context, err error) (bool
 		return true, err
 	}
 	return false, nil
+}
+
+func (r *Runtime) emitEvent(ctx context.Context, event observability.Event) {
+	if r == nil || r.deps.Logger == nil {
+		return
+	}
+	if event.Time.IsZero() && r.deps.Clock != nil {
+		event.Time = r.deps.Clock()
+	}
+	_ = r.deps.Logger.Log(ctx, event)
+}
+
+func runEvent(
+	issue tracker.Issue,
+	eventType observability.EventType,
+	runStatus string,
+	attempt int,
+	message string,
+) observability.Event {
+	return observability.Event{
+		Type:            eventType,
+		Message:         message,
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		RunStatus:       runStatus,
+		RetryAttempt:    attempt,
+	}
+}
+
+func runEventWithError(
+	issue tracker.Issue,
+	eventType observability.EventType,
+	runStatus string,
+	attempt int,
+	message string,
+	err error,
+) observability.Event {
+	event := runEvent(issue, eventType, runStatus, attempt, message)
+	event.Level = observability.LevelError
+	event.Error = errorString(err)
+	return event
+}
+
+func runEventWithFields(
+	issue tracker.Issue,
+	eventType observability.EventType,
+	runStatus string,
+	attempt int,
+	message string,
+	fields map[string]any,
+) observability.Event {
+	event := runEvent(issue, eventType, runStatus, attempt, message)
+	event.Fields = fields
+	return event
+}
+
+func sessionRunEvent(
+	issue tracker.Issue,
+	sessionID string,
+	eventType observability.EventType,
+	runStatus string,
+	attempt int,
+	message string,
+	err error,
+) observability.Event {
+	event := runEvent(issue, eventType, runStatus, attempt, message)
+	event.SessionID = sessionID
+	if err != nil {
+		event.Level = observability.LevelError
+		event.Error = err.Error()
+	}
+	return event
+}
+
+func hookEvent(issue tracker.Issue, name hooks.Name, attempt int, err error) observability.Event {
+	event := runEvent(
+		issue,
+		observability.EventHookFailed,
+		observability.RunStatusFailed,
+		attempt,
+		"action=hook run_status=failed",
+	)
+	event.Level = observability.LevelError
+	event.Error = errorString(err)
+	event.Fields = map[string]any{"hook": name.String()}
+	return event
+}
+
+func retryEventForIssue(
+	issue tracker.Issue,
+	entry runstate.Retry,
+	eventType observability.EventType,
+	retryState string,
+	message string,
+) observability.Event {
+	event := retryEventFromEntry(entry, eventType, retryState, message)
+	event.IssueID = firstNonEmpty(issue.ID, entry.IssueID)
+	event.IssueIdentifier = firstNonEmpty(issue.Identifier, entry.IssueKey)
+	return event
+}
+
+func retryEventFromEntry(
+	entry runstate.Retry,
+	eventType observability.EventType,
+	retryState string,
+	message string,
+) observability.Event {
+	dueAt := entry.DueAt
+	runStatus := observability.RunStatusRunning
+	if retryState == observability.RetryStateReleased || retryState == observability.RetryStateRequeued {
+		runStatus = observability.RunStatusSkipped
+	}
+	return observability.Event{
+		Type:            eventType,
+		Message:         message,
+		IssueID:         entry.IssueID,
+		IssueIdentifier: entry.IssueKey,
+		RunStatus:       runStatus,
+		RetryState:      retryState,
+		RetryAttempt:    entry.Attempt,
+		RetryDueAt:      &dueAt,
+		Error:           entry.Error,
+	}
+}
+
+func snapshotRunKey(run observability.RunSnapshot) string {
+	return firstNonEmpty(run.IssueIdentifier, run.IssueID)
+}
+
+func snapshotRetryKey(retry observability.RetrySnapshot) string {
+	return firstNonEmpty(retry.IssueIdentifier, retry.IssueID)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func skipFromPolicy(issue tracker.Issue, eligibility policy.Eligibility) SkipSummary {

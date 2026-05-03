@@ -15,6 +15,7 @@ import (
 	"github.com/SisyphusSQ/symphony-go/internal/agent"
 	"github.com/SisyphusSQ/symphony-go/internal/config"
 	"github.com/SisyphusSQ/symphony-go/internal/hooks"
+	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker"
 	"github.com/SisyphusSQ/symphony-go/internal/workspace"
@@ -128,6 +129,143 @@ func TestRuntimeTickDispatchesEligibleIssueThroughWorkspaceHooksAndRunner(t *tes
 	}
 	if got := prepareRequests[0].IssueIdentifier; got != "TOO-1" {
 		t.Fatalf("Prepare IssueIdentifier = %q, want TOO-1", got)
+	}
+}
+
+func TestRuntimeEmitsStructuredEventsWithIssueSessionRetryAndErrorFields(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Dispatch prompt")
+	runner := newFakeAgentRunner(nil)
+	runner.runErrors = []error{errors.New("agent failed")}
+	recorder := observability.NewRecorder(observability.WithRecorderClock(clock.Now))
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-129", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Logger:    recorder,
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+
+	failed := requireRecordedEvent(t, recorder, observability.EventAgentRunFailed)
+	if failed.IssueID != "issue-TOO-129" || failed.IssueIdentifier != "TOO-129" {
+		t.Fatalf("failed event issue fields = %#v", failed)
+	}
+	if failed.SessionID != "session-TOO-129" {
+		t.Fatalf("failed event SessionID = %q, want session-TOO-129", failed.SessionID)
+	}
+	if failed.RunStatus != observability.RunStatusFailed || failed.Error != "agent failed" {
+		t.Fatalf("failed event status/error = %#v", failed)
+	}
+
+	retry := requireRecordedEvent(t, recorder, observability.EventRetryScheduled)
+	if retry.IssueID != "issue-TOO-129" || retry.IssueIdentifier != "TOO-129" {
+		t.Fatalf("retry event issue fields = %#v", retry)
+	}
+	if retry.SessionID != "session-TOO-129" {
+		t.Fatalf("retry event SessionID = %q, want session-TOO-129", retry.SessionID)
+	}
+	if retry.RetryState != observability.RetryStateFailure || retry.RetryAttempt != 1 ||
+		retry.RetryDueAt == nil || retry.Error != "agent failed" {
+		t.Fatalf("retry event = %#v, want failure retry with due time and error", retry)
+	}
+}
+
+func TestRuntimeSnapshotCoversLifecycleActiveRunsAndRetryQueue(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	release := make(chan struct{})
+	runner := newFakeAgentRunner(release)
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-129", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Logger:    observability.DiscardLogger(),
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	requireStarted(t, runner.started, "TOO-129")
+	clock.Advance(2 * time.Second)
+
+	snapshot := runtime.Snapshot()
+	if snapshot.LifecycleState != string(StatusRunning) {
+		t.Fatalf("LifecycleState = %q, want running", snapshot.LifecycleState)
+	}
+	if len(snapshot.ActiveRuns) != 1 || len(snapshot.RetryQueue) != 0 {
+		t.Fatalf("snapshot = %#v, want one active run and no retries", snapshot)
+	}
+	active := snapshot.ActiveRuns[0]
+	if active.IssueID != "issue-TOO-129" || active.IssueIdentifier != "TOO-129" ||
+		active.RunStatus != observability.RunStatusRunning || active.SecondsRunning != 2 {
+		t.Fatalf("active snapshot = %#v", active)
+	}
+
+	close(release)
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+	snapshot = runtime.Snapshot()
+	if len(snapshot.ActiveRuns) != 0 || len(snapshot.RetryQueue) != 1 {
+		t.Fatalf("snapshot after completion = %#v, want no active runs and one retry", snapshot)
+	}
+	retry := snapshot.RetryQueue[0]
+	if retry.IssueID != "issue-TOO-129" || retry.IssueIdentifier != "TOO-129" ||
+		retry.RetryState != observability.RetryStateContinuation || retry.Attempt != 1 ||
+		!retry.DueAt.Equal(start.Add(3*time.Second)) || retry.Error != "" {
+		t.Fatalf("retry snapshot = %#v", retry)
+	}
+}
+
+func TestRuntimeIgnoresLoggerSinkErrors(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Dispatch prompt")
+	recorder := observability.NewRecorder(observability.WithRecorderError(errors.New("sink failed")))
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-129", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    newFakeAgentRunner(nil),
+		Logger:    recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+	if len(recorder.Events()) == 0 {
+		t.Fatal("recorder did not capture events before returning sink errors")
 	}
 }
 
@@ -1032,6 +1170,25 @@ func requireNoStart(t *testing.T, started <-chan agent.RunRequest) {
 		t.Fatalf("unexpected extra start: %#v", req)
 	case <-time.After(30 * time.Millisecond):
 	}
+}
+
+func requireRecordedEvent(
+	t *testing.T,
+	recorder *observability.Recorder,
+	eventType observability.EventType,
+) observability.Event {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events := recorder.EventsByType(eventType)
+		if len(events) > 0 {
+			return events[len(events)-1]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for event %q; events=%#v", eventType, recorder.Events())
+	return observability.Event{}
 }
 
 type fakeClock struct {
