@@ -7,6 +7,7 @@
 4. [TOO-120] 新增安全的 per-issue workspace manager，支持 identifier sanitize、root containment、目录创建/复用 metadata 与 fail-safe 冲突处理。
 5. [TOO-121] 新增 lifecycle hook runner，支持 workspace cwd 执行、timeout、输出捕获、失败结果返回和 create-only `after_create`。
 6. [TOO-122] 新增 Linear tracker 只读适配器，覆盖候选 issue、状态刷新、终态拉取、分页错误和 labels/blockers 归一化的 fake GraphQL 测试。
+7. [TOO-123] 新增 issue dispatch policy 与 `tracker.issue_filter` typed extension，覆盖 eligibility、blocker、排序和 repo label routing reason。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。

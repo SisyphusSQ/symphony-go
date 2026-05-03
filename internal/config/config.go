@@ -62,6 +62,16 @@ type Tracker struct {
 	ProjectSlug    string
 	ActiveStates   []string
 	TerminalStates []string
+	IssueFilter    IssueFilter
+}
+
+// IssueFilter is a Go-port tracker extension used to route issues within one
+// Linear project to a single execution repository instance.
+type IssueFilter struct {
+	RequireLabels                []string
+	RejectLabels                 []string
+	RequireAnyLabels             []string
+	RequireExactlyOneLabelPrefix string
 }
 
 type Polling struct {
@@ -107,6 +117,7 @@ func (cfg Config) Clone() Config {
 	cloned := cfg
 	cloned.Tracker.ActiveStates = cloneStrings(cfg.Tracker.ActiveStates)
 	cloned.Tracker.TerminalStates = cloneStrings(cfg.Tracker.TerminalStates)
+	cloned.Tracker.IssueFilter = cloneIssueFilter(cfg.Tracker.IssueFilter)
 	cloned.Agent.MaxConcurrentAgentsByState = cloneIntMap(cfg.Agent.MaxConcurrentAgentsByState)
 	cloned.Codex.TurnSandboxPolicy = cloneMap(cfg.Codex.TurnSandboxPolicy)
 	return cloned
@@ -182,6 +193,7 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 	cfg.WorkflowRef = def.Path
 
 	tracker := resolver.object(def.Config, "tracker", false)
+	issueFilter := resolver.object(tracker, "issue_filter", false)
 	polling := resolver.object(def.Config, "polling", false)
 	server := resolver.object(def.Config, "server", false)
 	workspaceConfig := resolver.object(def.Config, "workspace", false)
@@ -209,6 +221,24 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 		tracker,
 		"tracker.terminal_states",
 		cfg.Tracker.TerminalStates,
+	)
+	cfg.Tracker.IssueFilter.RequireLabels = resolver.stringSliceFieldDefault(
+		issueFilter,
+		"tracker.issue_filter.require_labels",
+		cfg.Tracker.IssueFilter.RequireLabels,
+	)
+	cfg.Tracker.IssueFilter.RejectLabels = resolver.stringSliceFieldDefault(
+		issueFilter,
+		"tracker.issue_filter.reject_labels",
+		cfg.Tracker.IssueFilter.RejectLabels,
+	)
+	cfg.Tracker.IssueFilter.RequireAnyLabels = resolver.stringSliceFieldDefault(
+		issueFilter,
+		"tracker.issue_filter.require_any_labels",
+		cfg.Tracker.IssueFilter.RequireAnyLabels,
+	)
+	cfg.Tracker.IssueFilter.RequireExactlyOneLabelPrefix = strings.TrimSpace(
+		resolver.stringField(issueFilter, "tracker.issue_filter.require_exactly_one_label_prefix"),
 	)
 
 	cfg.Polling.Interval = resolver.durationFieldDefault(
@@ -634,9 +664,9 @@ func lookup(obj map[string]any, field string) (any, bool) {
 	if obj == nil {
 		return nil, false
 	}
-	_, key, ok := strings.Cut(field, ".")
-	if !ok {
-		key = field
+	key := field
+	if dot := strings.LastIndex(field, "."); dot >= 0 {
+		key = field[dot+1:]
 	}
 	value, exists := obj[key]
 	return value, exists
@@ -784,6 +814,15 @@ func cloneIntMap(values map[string]int) map[string]int {
 		result[key] = value
 	}
 	return result
+}
+
+func cloneIssueFilter(value IssueFilter) IssueFilter {
+	return IssueFilter{
+		RequireLabels:                cloneStrings(value.RequireLabels),
+		RejectLabels:                 cloneStrings(value.RejectLabels),
+		RequireAnyLabels:             cloneStrings(value.RequireAnyLabels),
+		RequireExactlyOneLabelPrefix: value.RequireExactlyOneLabelPrefix,
+	}
 }
 
 func workflowDir(path string) string {

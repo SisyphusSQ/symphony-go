@@ -824,7 +824,8 @@ hooks:
     npm ci
 ```
 
-`issue_filter` 是建议加入 Go 版的扩展字段，不是官方 core schema。
+`issue_filter` 是建议加入 Go 版的扩展字段，不是官方 core schema。Go 版在 `tracker.issue_filter`
+下解析该配置，并由 dispatch policy 输出 machine-readable reason。
 
 ### 10.5 Go 版 issue filter 结构
 
@@ -882,7 +883,11 @@ func EligibleByLabels(issue Issue, filter IssueFilterConfig) (bool, string) {
             }
         }
 
-        if count != 1 {
+        if count == 0 {
+            return false, "missing_repo_routing_label"
+        }
+
+        if count > 1 {
             return false, "ambiguous_repo_routing_label"
         }
     }
