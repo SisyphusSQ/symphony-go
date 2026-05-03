@@ -9,6 +9,7 @@
 6. [TOO-122] 新增 Linear tracker 只读适配器，覆盖候选 issue、状态刷新、终态拉取、分页错误和 labels/blockers 归一化的 fake GraphQL 测试。
 7. [TOO-123] 新增 issue dispatch policy 与 `tracker.issue_filter` typed extension，覆盖 eligibility、blocker、排序和 repo label routing reason。
 8. [TOO-124] 新增 orchestrator polling 与 dispatch loop，支持 immediate/interval tick、runtime-owned state、workspace + hook + runner pipeline、global/per-state concurrency 和 CLI run startup wiring。
+9. [TOO-125] 新增 orchestrator retry queue、active-run reconciliation 与 terminal workspace cleanup，支持 normal exit continuation retry、exponential backoff cap、non-active release 和 `before_remove` cleanup hook。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。

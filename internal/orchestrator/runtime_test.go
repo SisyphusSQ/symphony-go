@@ -15,6 +15,7 @@ import (
 	"github.com/SisyphusSQ/symphony-go/internal/agent"
 	"github.com/SisyphusSQ/symphony-go/internal/config"
 	"github.com/SisyphusSQ/symphony-go/internal/hooks"
+	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker"
 	"github.com/SisyphusSQ/symphony-go/internal/workspace"
 )
@@ -264,6 +265,335 @@ func TestRuntimeRunContinuesAfterTransientTrackerFetchError(t *testing.T) {
 	}
 }
 
+func TestRuntimeNormalExitSchedulesContinuationRetryAndRedispatchesWhenDue(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	release := make(chan struct{})
+	runner := newFakeAgentRunner(release)
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-1", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	requireStarted(t, runner.started, "TOO-1")
+	close(release)
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+
+	entry := onlyRetryEntry(t, runtime)
+	if entry.Attempt != 1 || !entry.DueAt.Equal(start.Add(time.Second)) || entry.Error != "" {
+		t.Fatalf("retry entry = %#v, want continuation attempt due in 1s", entry)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(before due) error = %v", err)
+	}
+	if got := runner.callCount(); got != 1 {
+		t.Fatalf("runner calls before retry due = %d, want 1", got)
+	}
+
+	clock.Advance(time.Second)
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(after due) error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runner.callCount() == 2
+	})
+	if len(summary.Retries.Dispatched) != 1 || summary.Retries.Dispatched[0].Attempt != 1 {
+		t.Fatalf("retry dispatch summary = %#v, want attempt 1 dispatch", summary.Retries.Dispatched)
+	}
+}
+
+func TestRuntimeAbnormalExitSchedulesExponentialRetryWithConfiguredCap(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflowWithRetryBackoff(t, 5000, 2, 15000, "Prompt")
+	runner := newFakeAgentRunner(nil)
+	runner.runErrors = []error{errors.New("agent failed"), errors.New("agent failed again")}
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-1", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+	entry := onlyRetryEntry(t, runtime)
+	if entry.Attempt != 1 || !entry.DueAt.Equal(start.Add(10*time.Second)) || entry.Error != "agent failed" {
+		t.Fatalf("first retry = %#v, want attempt 1 after 10s", entry)
+	}
+
+	clock.Advance(10 * time.Second)
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(retry) error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		entries := runtime.RetryEntries()
+		return len(entries) == 1 && entries[0].Attempt == 2
+	})
+	entry = onlyRetryEntry(t, runtime)
+	wantDue := start.Add(25 * time.Second)
+	if entry.Attempt != 2 || !entry.DueAt.Equal(wantDue) || entry.Error != "agent failed again" {
+		t.Fatalf("second retry = %#v, want attempt 2 capped at 15s due %s", entry, wantDue)
+	}
+}
+
+func TestRuntimeDueRetryReleasesWhenIssueIsNoLongerCandidate(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	trackerClient := &fakeTrackerClient{candidates: []tracker.Issue{
+		runtimeIssue("TOO-1", "Todo"),
+	}}
+	runner := newFakeAgentRunner(nil)
+	runner.runErrors = []error{errors.New("agent failed")}
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+
+	trackerClient.setCandidates(nil)
+	clock.Advance(10 * time.Second)
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(release retry) error = %v", err)
+	}
+	if got := runtime.RetryIssueCount(); got != 0 {
+		t.Fatalf("RetryIssueCount() = %d, want 0 after release", got)
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls = %d, want no redispatch", runner.callCount())
+	}
+	if len(summary.Retries.Released) != 1 || summary.Retries.Released[0].Reason != "retry_issue_not_candidate" {
+		t.Fatalf("Released = %#v, want retry_issue_not_candidate", summary.Retries.Released)
+	}
+}
+
+func TestRuntimeReconcileUpdatesActiveRunningState(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	release := make(chan struct{})
+	trackerClient := &fakeTrackerClient{candidates: []tracker.Issue{
+		runtimeIssue("TOO-1", "Todo"),
+	}}
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    newFakeAgentRunner(release),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RunningIssueCount() == 1
+	})
+
+	trackerClient.setCandidates(nil)
+	trackerClient.setRefreshed([]tracker.Issue{runtimeIssue("TOO-1", "Rework")})
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(reconcile active) error = %v", err)
+	}
+	records := runtime.RunningRecords()
+	if len(records) != 1 || records[0].State != "Rework" {
+		t.Fatalf("running records = %#v, want Rework state", records)
+	}
+	if len(summary.Reconciliation.Updated) != 1 || summary.Reconciliation.Updated[0].State != "Rework" {
+		t.Fatalf("reconciliation updated = %#v, want Rework", summary.Reconciliation.Updated)
+	}
+	close(release)
+}
+
+func TestRuntimeReconcileStopsNonActiveRunWithoutCleanupOrRetry(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	release := make(chan struct{})
+	trackerClient := &fakeTrackerClient{candidates: []tracker.Issue{
+		runtimeIssue("TOO-1", "Todo"),
+	}}
+	workspace := &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true}
+	hookRunner := &fakeHookRunner{}
+	runner := newFakeAgentRunner(release)
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: workspace,
+		Hooks:     hookRunner,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	requireStarted(t, runner.started, "TOO-1")
+	trackerClient.setRefreshed([]tracker.Issue{runtimeIssue("TOO-1", "Backlog")})
+
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(reconcile inactive) error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runner.callCount() == 1 && runtime.RunningIssueCount() == 0
+	})
+	if runtime.RetryIssueCount() != 0 {
+		t.Fatalf("RetryIssueCount() = %d, want 0 after reconciliation stop", runtime.RetryIssueCount())
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls = %d, want no same-tick stale-candidate redispatch", runner.callCount())
+	}
+	if workspace.removeCallCount() != 0 {
+		t.Fatalf("workspace remove calls = %d, want 0 for non-active state", workspace.removeCallCount())
+	}
+	if hookRunner.hasCall(hooks.BeforeRemove) {
+		t.Fatal("before_remove hook ran for non-active state")
+	}
+	if len(summary.Reconciliation.Stopped) != 1 || summary.Reconciliation.Stopped[0].Reason != "inactive_state" {
+		t.Fatalf("Stopped = %#v, want inactive_state", summary.Reconciliation.Stopped)
+	}
+}
+
+func TestRuntimeReconcileStopsTerminalRunAndCleansWorkspace(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	release := make(chan struct{})
+	trackerClient := &fakeTrackerClient{candidates: []tracker.Issue{
+		runtimeIssue("TOO-1", "Todo"),
+	}}
+	workspace := &fakeWorkspacePreparer{
+		root:            t.TempDir(),
+		createdNow:      true,
+		cleanupExisting: map[string]bool{"TOO-1": true},
+		cleanupRealDir:  map[string]bool{"TOO-1": true},
+	}
+	hookRunner := &fakeHookRunner{}
+	runner := newFakeAgentRunner(release)
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: workspace,
+		Hooks:     hookRunner,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	requireStarted(t, runner.started, "TOO-1")
+	trackerClient.setRefreshed([]tracker.Issue{runtimeIssue("TOO-1", "Done")})
+
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(reconcile terminal) error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RunningIssueCount() == 0
+	})
+	if runtime.RetryIssueCount() != 0 {
+		t.Fatalf("RetryIssueCount() = %d, want 0 after terminal reconciliation", runtime.RetryIssueCount())
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls = %d, want no same-tick stale-candidate redispatch", runner.callCount())
+	}
+	if !hookRunner.hasCall(hooks.BeforeRemove) {
+		t.Fatal("before_remove hook did not run for terminal cleanup")
+	}
+	if workspace.removeCallCount() != 1 {
+		t.Fatalf("workspace remove calls = %d, want 1", workspace.removeCallCount())
+	}
+	if len(summary.Reconciliation.Stopped) != 1 || summary.Reconciliation.Stopped[0].Reason != "terminal_state" ||
+		!summary.Reconciliation.Stopped[0].Cleanup.Removed {
+		t.Fatalf("Stopped = %#v, want terminal cleanup removal", summary.Reconciliation.Stopped)
+	}
+}
+
+func TestRuntimeRunPerformsStartupTerminalWorkspaceCleanup(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 20, 1, "Prompt")
+	ctx, cancel := context.WithCancel(context.Background())
+	trackerClient := &fakeTrackerClient{
+		terminalIssues: []tracker.Issue{runtimeIssue("TOO-9", "Done")},
+		onFetch: func(int) {
+			cancel()
+		},
+	}
+	workspace := &fakeWorkspacePreparer{
+		root:            t.TempDir(),
+		createdNow:      true,
+		cleanupExisting: map[string]bool{"TOO-9": true},
+		cleanupRealDir:  map[string]bool{"TOO-9": true},
+	}
+	hookRunner := &fakeHookRunner{}
+
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: workspace,
+		Hooks:     hookRunner,
+		Runner:    newFakeAgentRunner(nil),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	if err := runtime.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !hookRunner.hasCall(hooks.BeforeRemove) {
+		t.Fatal("before_remove hook did not run during startup cleanup")
+	}
+	if workspace.removeCallCount() != 1 {
+		t.Fatalf("workspace remove calls = %d, want 1", workspace.removeCallCount())
+	}
+}
+
 func writeRuntimeWorkflow(t *testing.T, intervalMS int, maxAgents int, prompt string) string {
 	t.Helper()
 
@@ -345,9 +675,51 @@ agent:
 	return workflowPath
 }
 
+func writeRuntimeWorkflowWithRetryBackoff(
+	t *testing.T,
+	intervalMS int,
+	maxAgents int,
+	maxRetryBackoffMS int,
+	prompt string,
+) string {
+	t.Helper()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	content := strings.TrimLeft(`
+---
+tracker:
+  kind: linear
+  api_key: literal-token
+  project_slug: symphony-go
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+polling:
+  interval_ms: {interval_ms}
+agent:
+  max_concurrent_agents: {max_agents}
+  max_retry_backoff_ms: {max_retry_backoff_ms}
+---
+
+{prompt}
+`, "\n")
+	content = strings.ReplaceAll(content, "{interval_ms}", strconv.Itoa(intervalMS))
+	content = strings.ReplaceAll(content, "{max_agents}", strconv.Itoa(maxAgents))
+	content = strings.ReplaceAll(content, "{max_retry_backoff_ms}", strconv.Itoa(maxRetryBackoffMS))
+	content = strings.ReplaceAll(content, "{prompt}", prompt)
+
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow fixture: %v", err)
+	}
+	return workflowPath
+}
+
 type fakeTrackerClient struct {
 	mu                  sync.Mutex
 	candidates          []tracker.Issue
+	terminalIssues      []tracker.Issue
+	refreshed           []tracker.Issue
 	fetchErrors         []error
 	fetchCandidateCalls int
 	onFetch             func(int)
@@ -375,11 +747,15 @@ func (f *fakeTrackerClient) FetchCandidateIssues(context.Context) ([]tracker.Iss
 }
 
 func (f *fakeTrackerClient) FetchIssuesByStates(context.Context, []string) ([]tracker.Issue, error) {
-	return nil, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tracker.Issue(nil), f.terminalIssues...), nil
 }
 
 func (f *fakeTrackerClient) FetchIssueStatesByIDs(context.Context, []string) ([]tracker.Issue, error) {
-	return nil, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tracker.Issue(nil), f.refreshed...), nil
 }
 
 func (f *fakeTrackerClient) fetchCandidateCallCount() int {
@@ -388,11 +764,27 @@ func (f *fakeTrackerClient) fetchCandidateCallCount() int {
 	return f.fetchCandidateCalls
 }
 
+func (f *fakeTrackerClient) setCandidates(candidates []tracker.Issue) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.candidates = append([]tracker.Issue(nil), candidates...)
+}
+
+func (f *fakeTrackerClient) setRefreshed(issues []tracker.Issue) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshed = append([]tracker.Issue(nil), issues...)
+}
+
 type fakeWorkspacePreparer struct {
-	mu         sync.Mutex
-	root       string
-	createdNow bool
-	requests   []workspace.PrepareRequest
+	mu              sync.Mutex
+	root            string
+	createdNow      bool
+	requests        []workspace.PrepareRequest
+	cleanupRequests []workspace.CleanupRequest
+	removedTargets  []workspace.CleanupTarget
+	cleanupExisting map[string]bool
+	cleanupRealDir  map[string]bool
 }
 
 func (f *fakeWorkspacePreparer) Prepare(req workspace.PrepareRequest) (workspace.Workspace, error) {
@@ -413,6 +805,46 @@ func (f *fakeWorkspacePreparer) requestsSnapshot() []workspace.PrepareRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]workspace.PrepareRequest(nil), f.requests...)
+}
+
+func (f *fakeWorkspacePreparer) CleanupTarget(req workspace.CleanupRequest) (workspace.CleanupTarget, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.cleanupRequests = append(f.cleanupRequests, req)
+	key, err := workspace.SanitizeIdentifier(req.IssueIdentifier)
+	if err != nil {
+		return workspace.CleanupTarget{}, err
+	}
+	exists := f.cleanupExisting != nil && f.cleanupExisting[req.IssueIdentifier]
+	realDir := exists
+	if f.cleanupRealDir != nil {
+		realDir = f.cleanupRealDir[req.IssueIdentifier]
+	}
+	return workspace.CleanupTarget{
+		Workspace: workspace.Workspace{
+			Path:       filepath.Join(f.root, key),
+			Key:        key,
+			IssueID:    req.IssueID,
+			IssueKey:   req.IssueIdentifier,
+			CreatedNow: false,
+		},
+		Exists:          exists,
+		IsRealDirectory: realDir,
+	}, nil
+}
+
+func (f *fakeWorkspacePreparer) Remove(target workspace.CleanupTarget) (workspace.CleanupResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removedTargets = append(f.removedTargets, target)
+	return workspace.CleanupResult{Target: target, Removed: target.Exists}, nil
+}
+
+func (f *fakeWorkspacePreparer) removeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.removedTargets)
 }
 
 type fakeHookRunner struct {
@@ -449,11 +881,23 @@ func (f *fakeHookRunner) callNamesJoined() string {
 	return strings.Join(names, ",")
 }
 
+func (f *fakeHookRunner) hasCall(want hooks.Name) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, name := range f.calls {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
 type fakeAgentRunner struct {
-	mu       sync.Mutex
-	requests []agent.RunRequest
-	started  chan agent.RunRequest
-	release  <-chan struct{}
+	mu        sync.Mutex
+	requests  []agent.RunRequest
+	started   chan agent.RunRequest
+	release   <-chan struct{}
+	runErrors []error
 }
 
 func newFakeAgentRunner(release <-chan struct{}) *fakeAgentRunner {
@@ -466,6 +910,7 @@ func newFakeAgentRunner(release <-chan struct{}) *fakeAgentRunner {
 func (f *fakeAgentRunner) Run(ctx context.Context, req agent.RunRequest) (agent.RunResult, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	callIndex := len(f.requests) - 1
 	f.mu.Unlock()
 
 	f.started <- req
@@ -476,7 +921,14 @@ func (f *fakeAgentRunner) Run(ctx context.Context, req agent.RunRequest) (agent.
 		case <-f.release:
 		}
 	}
-	return agent.RunResult{SessionID: "session-" + req.IssueKey}, nil
+	result := agent.RunResult{SessionID: "session-" + req.IssueKey}
+	f.mu.Lock()
+	var runErr error
+	if callIndex < len(f.runErrors) {
+		runErr = f.runErrors[callIndex]
+	}
+	f.mu.Unlock()
+	return result, runErr
 }
 
 func (f *fakeAgentRunner) callCount() int {
@@ -559,6 +1011,37 @@ func requireNoStart(t *testing.T, started <-chan agent.RunRequest) {
 		t.Fatalf("unexpected extra start: %#v", req)
 	case <-time.After(30 * time.Millisecond):
 	}
+}
+
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock(now time.Time) *fakeClock {
+	return &fakeClock{now: now}
+}
+
+func (f *fakeClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now
+}
+
+func (f *fakeClock) Advance(duration time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = f.now.Add(duration)
+}
+
+func onlyRetryEntry(t *testing.T, runtime *Runtime) runstate.Retry {
+	t.Helper()
+
+	entries := runtime.RetryEntries()
+	if len(entries) != 1 {
+		t.Fatalf("RetryEntries() = %#v, want one entry", entries)
+	}
+	return entries[0]
 }
 
 func issueKeys(dispatched []DispatchSummary) string {

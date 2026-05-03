@@ -245,6 +245,51 @@ func TestNewManagerUsesTypedConfigWorkspace(t *testing.T) {
 	}
 }
 
+func TestManagerCleanupTargetDoesNotCreateMissingWorkspace(t *testing.T) {
+	root := t.TempDir()
+	manager := mustManager(t, root)
+
+	target, err := manager.CleanupTarget(CleanupRequest{IssueIdentifier: "TOO-125"})
+	if err != nil {
+		t.Fatalf("CleanupTarget() error = %v", err)
+	}
+	if target.Exists {
+		t.Fatalf("Exists = true, want false for missing workspace")
+	}
+	if target.Path != filepath.Join(root, "TOO-125") {
+		t.Fatalf("Path = %q, want resolved workspace path", target.Path)
+	}
+	if _, err := os.Stat(target.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace path stat error = %v, want not exist", err)
+	}
+}
+
+func TestManagerCleanupRemovesExistingWorkspace(t *testing.T) {
+	root := t.TempDir()
+	manager := mustManager(t, root)
+	prepared, err := manager.Prepare(PrepareRequest{
+		IssueID:         "linear-id",
+		IssueIdentifier: "TOO-125",
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+
+	result, err := manager.Cleanup(CleanupRequest{
+		IssueID:         "linear-id",
+		IssueIdentifier: "TOO-125",
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if !result.Target.Exists || !result.Target.IsRealDirectory || !result.Removed {
+		t.Fatalf("Cleanup() = %#v, want existing real directory removed", result)
+	}
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace path stat error = %v, want not exist", err)
+	}
+}
+
 func mustManager(t *testing.T, root string) *Manager {
 	t.Helper()
 
