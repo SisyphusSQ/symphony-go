@@ -22,6 +22,7 @@ const (
 	DefaultMaxConcurrentAgents = 10
 	DefaultMaxTurns            = 20
 	DefaultMaxRetryBackoff     = 5 * time.Minute
+	DefaultStateStoreLease     = 5 * time.Minute
 	DefaultCodexCommand        = "codex app-server"
 	DefaultCodexTurnTimeout    = time.Hour
 	DefaultCodexReadTimeout    = 5 * time.Second
@@ -47,6 +48,7 @@ type Config struct {
 	Tracker     Tracker
 	Polling     Polling
 	Server      Server
+	StateStore  StateStore
 	Workspace   Workspace
 	Hooks       Hooks
 	Agent       Agent
@@ -80,6 +82,12 @@ type Polling struct {
 
 type Server struct {
 	Port int
+}
+
+type StateStore struct {
+	Path         string
+	InstanceID   string
+	LeaseTimeout time.Duration
 }
 
 type Workspace struct {
@@ -196,6 +204,7 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 	issueFilter := resolver.object(tracker, "issue_filter", false)
 	polling := resolver.object(def.Config, "polling", false)
 	server := resolver.object(def.Config, "server", false)
+	stateStore := resolver.object(def.Config, "state_store", false)
 	workspaceConfig := resolver.object(def.Config, "workspace", false)
 	hooks := resolver.object(def.Config, "hooks", false)
 	agent := resolver.object(def.Config, "agent", false)
@@ -252,6 +261,18 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 		"server.port",
 		cfg.Server.Port,
 		validPort,
+	)
+	cfg.StateStore.Path = resolver.optionalPathField(stateStore, "state_store.path")
+	cfg.StateStore.InstanceID = strings.TrimSpace(resolver.stringFieldDefault(
+		stateStore,
+		"state_store.instance_id",
+		cfg.StateStore.InstanceID,
+	))
+	cfg.StateStore.LeaseTimeout = resolver.durationFieldDefault(
+		stateStore,
+		"state_store.lease_timeout_ms",
+		cfg.StateStore.LeaseTimeout,
+		positiveDuration,
 	)
 
 	workspaceRoot := resolver.stringFieldDefault(
@@ -367,6 +388,9 @@ func defaultConfig(tempDir string) Config {
 		Server: Server{
 			Port: DefaultServerPort,
 		},
+		StateStore: StateStore{
+			LeaseTimeout: DefaultStateStoreLease,
+		},
 		Workspace: Workspace{
 			Root: filepath.Join(tempDir, DefaultWorkspaceRootBase),
 		},
@@ -403,6 +427,39 @@ func (r *resolver) object(root map[string]any, key string, required bool) map[st
 		return nil
 	}
 	return obj
+}
+
+func (r *resolver) optionalPathField(obj map[string]any, field string) string {
+	raw, ok := lookup(obj, field)
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		r.add(field, fmt.Errorf("must be a string, got %T", raw))
+		return ""
+	}
+	expanded := strings.TrimSpace(r.expandEnv(value, field))
+	if expanded == "" {
+		return ""
+	}
+	if strings.ContainsRune(expanded, 0) {
+		r.add(field, errors.New("must not contain NUL bytes"))
+		return ""
+	}
+	expanded = r.expandHome(expanded, field)
+	if expanded == "" {
+		return ""
+	}
+	if !filepath.IsAbs(expanded) {
+		expanded = filepath.Join(workflowDir(r.def.Path), expanded)
+	}
+	absolute, err := filepath.Abs(expanded)
+	if err != nil {
+		r.add(field, fmt.Errorf("cannot be normalized: %w", err))
+		return ""
+	}
+	return filepath.Clean(absolute)
 }
 
 func (r *resolver) stringField(obj map[string]any, field string) string {

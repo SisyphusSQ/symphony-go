@@ -753,6 +753,108 @@ func TestRuntimeRunPerformsStartupTerminalWorkspaceCleanup(t *testing.T) {
 	}
 }
 
+func TestRuntimeRecoverStateSeedsPersistedRetryQueue(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	store, err := runstate.OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.UpsertRetry(ctx, runstate.Retry{
+		RunID:    "run-retry",
+		IssueID:  "issue-TOO-132",
+		IssueKey: "TOO-132",
+		Attempt:  2,
+		DueAt:    start.Add(time.Minute),
+		Error:    "agent failed",
+	}); err != nil {
+		t.Fatalf("UpsertRetry() error = %v", err)
+	}
+
+	runtime, err := NewRuntimeWithDependencies(writeRuntimeWorkflow(t, 5000, 2, "Prompt"), Dependencies{
+		StateStore: store,
+		Clock:      clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	recovery := runtime.RecoverState(ctx)
+	if recovery.Err != nil {
+		t.Fatalf("RecoverState() error = %v", recovery.Err)
+	}
+	if recovery.InterruptedRuns != 0 || recovery.RecoveredRetries != 1 {
+		t.Fatalf("recovery = %#v, want one recovered retry", recovery)
+	}
+	entries := runtime.RetryEntries()
+	if len(entries) != 1 || entries[0].IssueKey != "TOO-132" || entries[0].Attempt != 2 {
+		t.Fatalf("RetryEntries = %#v, want persisted retry", entries)
+	}
+	secondRecovery := runtime.RecoverState(ctx)
+	if secondRecovery.InterruptedRuns != 0 || secondRecovery.RecoveredRetries != 0 || secondRecovery.Err != nil {
+		t.Fatalf("second recovery = %#v, want no-op", secondRecovery)
+	}
+}
+
+func TestRuntimeStartupRecoveryDispatchesInterruptedRunAsRetry(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	store, err := runstate.OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.ClaimRun(ctx, runstate.Run{
+		ID:        "run-before-crash",
+		IssueID:   "issue-TOO-132",
+		IssueKey:  "TOO-132",
+		Attempt:   0,
+		StartedAt: start.Add(-time.Minute),
+	}, start.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun() error = %v", err)
+	}
+
+	release := make(chan struct{})
+	runner := newFakeAgentRunner(release)
+	runtime, err := NewRuntimeWithDependencies(writeRuntimeWorkflow(t, 5000, 2, "Prompt"), Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-132", "Todo"),
+		}},
+		Workspace:  &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:      &fakeHookRunner{},
+		Runner:     runner,
+		StateStore: store,
+		Clock:      clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	summary, err := runtime.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	if summary.Recovery.InterruptedRuns != 1 || summary.Recovery.RecoveredRetries != 1 {
+		t.Fatalf("Recovery = %#v, want interrupted run converted to retry", summary.Recovery)
+	}
+	if len(summary.Retries.Dispatched) != 1 || summary.Retries.Dispatched[0].IssueKey != "TOO-132" ||
+		summary.Retries.Dispatched[0].Attempt != 1 {
+		t.Fatalf("Retries.Dispatched = %#v, want recovered retry dispatch attempt 1", summary.Retries.Dispatched)
+	}
+	requireStarted(t, runner.started, "TOO-132")
+	requests := runner.requestsSnapshot()
+	if len(requests) != 1 || requests[0].Attempt == nil || *requests[0].Attempt != 1 {
+		t.Fatalf("RunRequest.Attempt = %#v, want recovered retry attempt 1", requests)
+	}
+	close(release)
+	waitUntil(t, func() bool {
+		return runtime.RunningIssueCount() == 0
+	})
+}
+
 func writeRuntimeWorkflow(t *testing.T, intervalMS int, maxAgents int, prompt string) string {
 	t.Helper()
 

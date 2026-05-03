@@ -23,6 +23,7 @@ const (
 
 // RunRecord is the runtime-owned mutable view of one active issue dispatch.
 type RunRecord struct {
+	RunID         string
 	IssueID       string
 	IssueKey      string
 	State         string
@@ -96,12 +97,14 @@ func (s *runtimeState) policyRuntimeState() policy.RuntimeState {
 
 func (s *runtimeState) start(
 	issue tracker.Issue,
+	runID string,
 	workspacePath string,
 	attempt int,
 	now time.Time,
 	cancel context.CancelFunc,
 ) RunRecord {
 	record := RunRecord{
+		RunID:         runID,
 		IssueID:       issue.ID,
 		IssueKey:      issue.Identifier,
 		State:         issue.State,

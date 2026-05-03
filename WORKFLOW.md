@@ -23,6 +23,12 @@ server:
 workspace:
   root: "$SYMPHONY_WORKSPACE_ROOT"
 
+# Durable state is optional. When enabled, path is resolved like workspace.root
+# and stores local runs, sessions, retry queue rows, and agent events.
+# state_store:
+#   path: "$SYMPHONY_STATE_DB"
+#   lease_timeout_ms: 300000
+
 hooks:
   after_create: |
     git clone "$SOURCE_REPO_URL" .

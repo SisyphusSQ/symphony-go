@@ -576,6 +576,17 @@ issue 进入 terminal state 后停止或清理
 每次 dispatch 有 idempotency key
 ```
 
+Go port implementation-defined choices for `TOO-132`:
+
+| 项目 | 当前实现 |
+|---|---|
+| 配置入口 | `state_store.path` 为空时保持 in-memory 行为；配置后由 `internal/state` 打开并 migrate SQLite。 |
+| SQLite driver | 使用 pure Go `modernc.org/sqlite`，避免把本地状态能力绑定到 cgo 环境。 |
+| migration | `schema_migrations` 记录当前 schema version；missing DB 自动创建，corrupt DB 直接 startup fail。 |
+| restart recovery | 本地单实例重启时，持久化 `running` rows 视为 interrupted crash artifacts，清 lease 后按 issue id upsert 一个 due retry。 |
+| idempotency | active claim 由 `runs.status = running` + `issue_id` + lease 检查保护；retry queue 以 `issue_id` 为 primary key 防止重复恢复。 |
+| event/session | orchestrator 继续以 structured logger 为 operator surface，同时 best-effort append `agent_events` 和 upsert latest `sessions` 供 crash inspection。 |
+
 ---
 
 ## 8. 安全默认值

@@ -43,6 +43,12 @@ func TestFromWorkflowAppliesSpecDefaults(t *testing.T) {
 	if cfg.Server.Port != DefaultServerPort {
 		t.Fatalf("Server.Port = %d, want %d", cfg.Server.Port, DefaultServerPort)
 	}
+	if cfg.StateStore.Path != "" {
+		t.Fatalf("StateStore.Path = %q, want empty default", cfg.StateStore.Path)
+	}
+	if cfg.StateStore.LeaseTimeout != DefaultStateStoreLease {
+		t.Fatalf("StateStore.LeaseTimeout = %s, want %s", cfg.StateStore.LeaseTimeout, DefaultStateStoreLease)
+	}
 	if cfg.Hooks.Timeout != DefaultHookTimeout {
 		t.Fatalf("Hooks.Timeout = %s, want %s", cfg.Hooks.Timeout, DefaultHookTimeout)
 	}
@@ -85,6 +91,11 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	raw["workspace"] = map[string]any{
 		"root": "$SYMPHONY_WORKSPACE_ROOT",
 	}
+	raw["state_store"] = map[string]any{
+		"path":             "$SYMPHONY_STATE_DB",
+		"instance_id":      "dev-instance",
+		"lease_timeout_ms": 90000,
+	}
 	raw["hooks"] = map[string]any{
 		"after_create": `git clone "$SOURCE_REPO_URL" .`,
 		"timeout_ms":   120000,
@@ -120,6 +131,7 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 		WithEnv(mapEnv(map[string]string{
 			"LINEAR_API_KEY":          "resolved-token",
 			"SYMPHONY_WORKSPACE_ROOT": workspaceRoot,
+			"SYMPHONY_STATE_DB":       filepath.Join(tempDir, "state", "symphony.sqlite"),
 		})),
 	)
 
@@ -128,6 +140,12 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	}
 	if cfg.Workspace.Root != filepath.Clean(workspaceRoot) {
 		t.Fatalf("Workspace.Root = %q, want %q", cfg.Workspace.Root, filepath.Clean(workspaceRoot))
+	}
+	if cfg.StateStore.Path != filepath.Join(tempDir, "state", "symphony.sqlite") {
+		t.Fatalf("StateStore.Path = %q", cfg.StateStore.Path)
+	}
+	if cfg.StateStore.InstanceID != "dev-instance" || cfg.StateStore.LeaseTimeout != 90*time.Second {
+		t.Fatalf("StateStore = %#v, want configured instance and lease", cfg.StateStore)
 	}
 	if cfg.Hooks.AfterCreate != `git clone "$SOURCE_REPO_URL" .` {
 		t.Fatalf("hook script was unexpectedly expanded: %q", cfg.Hooks.AfterCreate)
@@ -271,6 +289,10 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 		"server": map[string]any{
 			"port": 70000,
 		},
+		"state_store": map[string]any{
+			"path":             42,
+			"lease_timeout_ms": 0,
+		},
 		"workspace": map[string]any{
 			"root": "/",
 		},
@@ -310,6 +332,8 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 		"tracker.issue_filter.require_exactly_one_label_prefix",
 		"polling.interval_ms",
 		"server.port",
+		"state_store.path",
+		"state_store.lease_timeout_ms",
 		"workspace.root",
 		"hooks.timeout_ms",
 		"agent.max_concurrent_agents",
