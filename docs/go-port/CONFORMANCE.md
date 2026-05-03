@@ -144,7 +144,71 @@ the Go port as the production replacement.
 | Pause/resume/drain/cancel/retry command behavior | Architecture Section 13 | `implemented` | `TOO-133` wires pause/resume/drain/cancel/retry/cleanup runtime behavior through the local operator HTTP surface and CLI client commands; authentication/RBAC remains an enterprise hardening follow-up. |
 | Per-project concurrency, per-issue timeout, max turns, and cost limits | Architecture Sections 6.2, 8, 13 | `implemented` | Earlier orchestrator slices enforce global and per-state concurrency. `TOO-134` adds per-issue max turns, max run duration, max total tokens, and optional estimated token-cost limits, with guardrail stops treated as non-retryable resource boundary events. |
 | Typed Linear writes for comments and state transitions | Architecture Section 6.2 | `implemented` | `TOO-135` adds first-class Linear write APIs for comment create/update, single-heading workpad upsert, state transition, and URL attachment link writeback, with deterministic fake server coverage and no browser-based workflow. |
-| Cutover runbook and replacement gate | Architecture Section 14 | `deferred` | Planned for `TOO-136`; external Symphony remains bootstrap runner until cutover. |
+| Cutover runbook and replacement gate | Architecture Section 14 | `documented` | `TOO-136` adds `docs/go-port/CUTOVER_RUNBOOK.md`, a final cutover decision gate, rollback plan, post-cutover monitoring standards, and residual-risk summary. Current decision remains `NO-GO` until the explicit real dogfood and production cutover smoke gates pass in the target environment; external Symphony remains the bootstrap runner. |
+
+## Final Cutover Conformance Summary
+
+`TOO-136` defines the final Go replacement gate for the v1 operating shape:
+
+```text
+one Go Symphony instance
+  -> one WORKFLOW.md
+  -> one Linear project
+  -> one execution repo
+  -> one workspace root
+  -> one SQLite state database
+```
+
+Current cutover decision:
+
+| Field | Value |
+| --- | --- |
+| Decision | `NO-GO` |
+| Reason | `TOO-136` passed the deterministic/local gates and the default real-dogfood skip gate, but the explicit real dogfood/full production cutover gate still requires target-environment credentials, an isolated active issue, repo URL, workspace root, and local Codex auth. |
+| Replacement claim | Not made. The Go implementation is not documented as the production replacement until every required gate passes. |
+| Fallback | Keep the external Symphony bootstrap runner active or immediately recoverable. |
+| Runbook | `docs/go-port/CUTOVER_RUNBOOK.md` |
+
+`TOO-136` validation evidence:
+
+| Gate | Current evidence |
+| --- | --- |
+| Full Go regression | `go test ./...` passed. |
+| Harness consistency | `make harness-check` passed. |
+| Fake E2E | `make test-fake-e2e` passed. |
+| Real dogfood default safety | `make test-real-integration` passed with explicit skip because `SYMPHONY_REAL_INTEGRATION` was not set. |
+| Durable state | Focused SQLite/orchestrator recovery tests passed. |
+| Operator controls | Focused orchestrator/server/CLI control tests passed. |
+| Production safety | Focused safety/config/observability/agent/orchestrator/state tests passed. |
+| Typed Linear writes | Focused Linear write API and raw GraphQL tool tests passed. |
+| Production baseline smoke | CLI help, validate, run, and loopback ephemeral port smoke commands passed. |
+| Explicit real dogfood | Blocked until target-environment enablement is supplied. |
+
+Required gate evidence for a future `GO` decision:
+
+| Gate | Required outcome |
+| --- | --- |
+| Full Go regression | `go test ./...` passes. |
+| Harness consistency | `make harness-check` passes. |
+| Fake E2E | `make test-fake-e2e` passes. |
+| Real dogfood default safety | `make test-real-integration` succeeds with explicit skip when disabled. |
+| Real dogfood explicit run | `SYMPHONY_REAL_INTEGRATION=1 ... make test-real-integration` passes against an isolated active issue. |
+| Durable state | SQLite migration, retry/session persistence, restart recovery, and interrupted-run retry recovery pass. |
+| Operator controls | pause/resume/drain/cancel/retry/status/ready/metrics and CLI startup behavior pass. |
+| Production safety | safe sandbox defaults, redaction, audit events, and runtime/cost guardrails pass. |
+| Typed Linear writes | comment/workpad/state/link writes and raw Linear GraphQL escape hatch pass deterministic tests. |
+| Production baseline smoke | CLI validate/run/help and loopback operator startup smoke pass. |
+
+## Cutover Residual Risk List
+
+| Risk | Status | Cutover impact |
+| --- | --- | --- |
+| Explicit real dogfood not yet proven in the target environment | blocking for replacement | Required `GO` gate; default skip is not enough. |
+| Filesystem orphan discovery beyond tracker-known terminal cleanup | residual follow-up | Does not block the documented gate, but should remain an operator monitoring item during cutover. |
+| Observability settings front matter remains deferred | residual follow-up | Current local status/metrics endpoints exist; configurable observability sinks remain future work. |
+| Enterprise hardening | out of scope | RBAC, approval queue, container workers, secret manager, and policy engine are not part of this v1 cutover gate. |
+| Fleet manager / single-instance multi-repo | out of scope | V1 cutover is one instance per repo; fleet aggregation must be implemented separately. |
+| Additional tracker adapters | out of scope | Linear remains the only v1 tracker target. |
 
 ## Deferred and Implementation-Defined Decisions
 
