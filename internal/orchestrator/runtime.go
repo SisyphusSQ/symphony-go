@@ -432,6 +432,18 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 	}
 	summary.Reconciliation = r.reconcileRunning(ctx, cfg)
 	stoppedThisTick := stoppedIssueIDs(summary.Reconciliation.Stopped)
+	if status, paused := r.controlDispatchPaused(); paused {
+		r.emitEvent(ctx, observability.Event{
+			Level:   observability.LevelInfo,
+			Type:    observability.EventOrchestratorDispatchSkipped,
+			Message: "action=dispatch skipped=true",
+			Fields: map[string]any{
+				"reason":          "operator_control",
+				"lifecycle_state": string(status),
+			},
+		})
+		return summary, nil
+	}
 
 	now := r.deps.Clock()
 	r.mu.Lock()

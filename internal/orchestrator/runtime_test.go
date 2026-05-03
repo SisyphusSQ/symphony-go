@@ -241,6 +241,164 @@ func TestRuntimeSnapshotCoversLifecycleActiveRunsAndRetryQueue(t *testing.T) {
 	}
 }
 
+func TestRuntimePauseDrainAndResumeControlDispatch(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	trackerClient := &fakeTrackerClient{candidates: []tracker.Issue{
+		runtimeIssue("TOO-133", "Todo"),
+	}}
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    newFakeAgentRunner(nil),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	result, err := runtime.Pause()
+	if err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+	if result.LifecycleState != string(StatusPaused) || runtime.Status() != StatusPaused {
+		t.Fatalf("Pause result/status = %#v/%q, want paused", result, runtime.Status())
+	}
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(paused) error = %v", err)
+	}
+	if len(summary.Dispatched) != 0 || trackerClient.fetchCandidateCallCount() != 0 {
+		t.Fatalf("paused tick dispatched=%#v fetches=%d, want no dispatch/fetch", summary.Dispatched, trackerClient.fetchCandidateCallCount())
+	}
+
+	if _, err := runtime.Resume(); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	summary, err = runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(resumed) error = %v", err)
+	}
+	if len(summary.Dispatched) != 1 || summary.Dispatched[0].IssueKey != "TOO-133" {
+		t.Fatalf("resumed dispatched = %#v, want TOO-133", summary.Dispatched)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+
+	if _, err := runtime.Drain(); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+	entriesBefore := runtime.RetryEntries()
+	if len(entriesBefore) != 1 {
+		t.Fatalf("RetryEntries before drain tick = %#v, want one retry", entriesBefore)
+	}
+	summary, err = runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(draining) error = %v", err)
+	}
+	if len(summary.Retries.Dispatched) != 0 || runtime.RetryIssueCount() != 1 {
+		t.Fatalf("draining retry dispatch=%#v retry_count=%d, want retry held", summary.Retries.Dispatched, runtime.RetryIssueCount())
+	}
+}
+
+func TestRuntimeCancelRunStopsActiveAttemptWithoutRetry(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	release := make(chan struct{})
+	runner := newFakeAgentRunner(release)
+	recorder := observability.NewRecorder()
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-133", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Logger:    recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	requireStarted(t, runner.started, "TOO-133")
+	result, err := runtime.CancelRun(context.Background(), "TOO-133")
+	if err != nil {
+		t.Fatalf("CancelRun() error = %v", err)
+	}
+	if result.Status != "canceled" {
+		t.Fatalf("CancelRun result = %#v, want canceled", result)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RunningIssueCount() == 0
+	})
+	if runtime.RetryIssueCount() != 0 {
+		t.Fatalf("RetryIssueCount() = %d, want no retry after operator cancel", runtime.RetryIssueCount())
+	}
+	if len(recorder.EventsByType(observability.EventOperatorControl)) == 0 {
+		t.Fatalf("operator control event was not recorded; events=%#v", recorder.Events())
+	}
+}
+
+func TestRuntimeRetryRunWakesQueuedRetryAndRejectsRunningRun(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	runner := newFakeAgentRunner(nil)
+	runner.runErrors = []error{errors.New("agent failed")}
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-133", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.RetryIssueCount() == 1
+	})
+	clock.Advance(time.Minute)
+	result, err := runtime.RetryRun(context.Background(), "TOO-133")
+	if err != nil {
+		t.Fatalf("RetryRun() error = %v", err)
+	}
+	if result.Status != "queued" {
+		t.Fatalf("RetryRun result = %#v, want queued", result)
+	}
+	entry := onlyRetryEntry(t, runtime)
+	if !entry.DueAt.Equal(clock.Now()) || entry.BackoffMS != 0 {
+		t.Fatalf("retry entry after operator retry = %#v, want due now and no backoff", entry)
+	}
+
+	release := make(chan struct{})
+	activeRuntime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-134", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    newFakeAgentRunner(release),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies(active) error = %v", err)
+	}
+	if _, err := activeRuntime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(active) error = %v", err)
+	}
+	_, err = activeRuntime.RetryRun(context.Background(), "TOO-134")
+	if !errors.Is(err, ErrControlConflict) {
+		t.Fatalf("RetryRun(active) error = %v, want ErrControlConflict", err)
+	}
+	close(release)
+}
+
 func TestRuntimeIgnoresLoggerSinkErrors(t *testing.T) {
 	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Dispatch prompt")
 	recorder := observability.NewRecorder(observability.WithRecorderError(errors.New("sink failed")))
