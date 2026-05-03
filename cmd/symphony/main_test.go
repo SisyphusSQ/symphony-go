@@ -156,7 +156,7 @@ func TestRunPerformsStartupValidationWithoutStartingRuntime(t *testing.T) {
 
 	for _, want := range []string{
 		`workflow "` + workflowPath + `" passed startup validation; server.port override 1234; instance "dev"`,
-		"orchestrator runtime is not implemented in this slice; no workers started",
+		"orchestrator runtime loaded; dispatch dependencies are not configured in this CLI slice",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("run output missing %q:\n%s", want, output)
@@ -195,7 +195,17 @@ func executeCommand(t *testing.T, args ...string) (string, error) {
 func writeWorkflow(t *testing.T, path string) {
 	t.Helper()
 
-	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: linear\n---\nPrompt\n"), 0o644); err != nil {
+	content := strings.Join([]string{
+		"---",
+		"tracker:",
+		"  kind: linear",
+		"  api_key: literal-token",
+		"  project_slug: symphony-go",
+		"---",
+		"Prompt",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write workflow fixture: %v", err)
 	}
 }
