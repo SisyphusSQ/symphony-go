@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -40,22 +41,24 @@ type HookRunner interface {
 
 // Dependencies are the side-effecting collaborators needed by the dispatch loop.
 type Dependencies struct {
-	Tracker   tracker.Client
-	Workspace WorkspaceManager
-	Hooks     HookRunner
-	Runner    agent.Runner
-	Logger    observability.Logger
-	Clock     func() time.Time
+	Tracker    tracker.Client
+	Workspace  WorkspaceManager
+	Hooks      HookRunner
+	Runner     agent.Runner
+	Logger     observability.Logger
+	StateStore runstate.Store
+	Clock      func() time.Time
 }
 
 // Runtime is the reload-aware surface and the single owner of mutable
 // orchestrator state.
 type Runtime struct {
-	mu       sync.Mutex
-	status   Status
-	reloader *config.Reloader
-	deps     Dependencies
-	state    runtimeState
+	mu        sync.Mutex
+	status    Status
+	reloader  *config.Reloader
+	deps      Dependencies
+	state     runtimeState
+	recovered bool
 }
 
 // NewRuntime loads the initial workflow config and prepares the runtime state.
@@ -79,6 +82,17 @@ func NewRuntimeWithDependencies(
 	}
 	if deps.Logger == nil {
 		deps.Logger = observability.DiscardLogger()
+	}
+	cfg := reloader.Current()
+	if deps.StateStore == nil && cfg.StateStore.Path != "" {
+		store, err := runstate.OpenSQLiteStore(
+			cfg.StateStore.Path,
+			runstate.WithInstanceID(cfg.StateStore.InstanceID),
+		)
+		if err != nil {
+			return nil, err
+		}
+		deps.StateStore = store
 	}
 	return &Runtime{
 		status:   StatusRunning,
@@ -185,6 +199,36 @@ func (r *Runtime) Snapshot() observability.Snapshot {
 	}
 }
 
+// RecoverState seeds in-memory retry state from durable startup recovery once.
+func (r *Runtime) RecoverState(ctx context.Context) StartupRecoverySummary {
+	r.mu.Lock()
+	if r.recovered || r.deps.StateStore == nil {
+		r.recovered = true
+		r.mu.Unlock()
+		return StartupRecoverySummary{}
+	}
+	store := r.deps.StateStore
+	now := r.deps.Clock()
+	r.mu.Unlock()
+
+	snapshot, err := store.RecoverStartup(ctx, now)
+	if err != nil {
+		return StartupRecoverySummary{Err: err}
+	}
+
+	r.mu.Lock()
+	for _, retry := range snapshot.Retries {
+		r.state.scheduleRetry(retry)
+	}
+	r.recovered = true
+	r.mu.Unlock()
+
+	return StartupRecoverySummary{
+		InterruptedRuns:  len(snapshot.InterruptedRuns),
+		RecoveredRetries: len(snapshot.Retries),
+	}
+}
+
 // ReloadWorkflowIfChanged updates the effective config for future dispatch
 // while preserving active issue state.
 func (r *Runtime) ReloadWorkflowIfChanged() config.ReloadResult {
@@ -222,6 +266,7 @@ func (r *Runtime) DispatchReady() error {
 // TickSummary records one orchestrator polling tick.
 type TickSummary struct {
 	Reload         config.ReloadResult
+	Recovery       StartupRecoverySummary
 	Reconciliation ReconcileSummary
 	Retries        RetryTickSummary
 	Candidates     int
@@ -291,6 +336,13 @@ type StartupCleanupSummary struct {
 	TrackerErr error
 }
 
+// StartupRecoverySummary records durable state restored during startup.
+type StartupRecoverySummary struct {
+	InterruptedRuns  int
+	RecoveredRetries int
+	Err              error
+}
+
 // RunOnce executes one polling tick.
 func (r *Runtime) RunOnce(ctx context.Context) (TickSummary, error) {
 	return r.Tick(ctx)
@@ -299,6 +351,10 @@ func (r *Runtime) RunOnce(ctx context.Context) (TickSummary, error) {
 // Run starts the orchestrator loop. It performs an immediate tick and then
 // repeats at the current effective polling interval.
 func (r *Runtime) Run(ctx context.Context) error {
+	if recovery := r.RecoverState(ctx); recovery.Err != nil {
+		r.setStatus(StatusStopped)
+		return recovery.Err
+	}
 	r.CleanupTerminalWorkspaces(ctx)
 
 	if _, err := r.Tick(ctx); err != nil {
@@ -351,6 +407,18 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 	}
 
 	cfg := r.FutureDispatchConfig()
+	summary.Recovery = r.RecoverState(ctx)
+	if summary.Recovery.Err != nil {
+		summary.DispatchErr = summary.Recovery.Err
+		r.emitEvent(ctx, observability.Event{
+			Level:     observability.LevelError,
+			Type:      observability.EventOrchestratorRunFailed,
+			Message:   "action=startup_recovery run_status=failed",
+			RunStatus: observability.RunStatusFailed,
+			Error:     summary.Recovery.Err.Error(),
+		})
+		return summary, summary.Recovery.Err
+	}
 	if err := r.DispatchReady(); err != nil {
 		summary.DispatchErr = err
 		r.emitEvent(ctx, observability.Event{
@@ -381,7 +449,7 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 			Error:   err.Error(),
 		})
 		if len(dueRetries) > 0 {
-			summary.Retries.Requeued = r.requeueRetriesAfterFetchError(cfg, dueRetries, now)
+			summary.Retries.Requeued = r.requeueRetriesAfterFetchError(ctx, cfg, dueRetries, now)
 		}
 		return summary, err
 	}
@@ -474,7 +542,38 @@ func (r *Runtime) tryStart(
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	r.state.start(issue, "", attempt, r.deps.Clock(), cancel)
+	now := r.deps.Clock()
+	runID := runstate.NewID("run")
+	if r.deps.StateStore != nil {
+		err := r.deps.StateStore.ClaimRun(ctx, runstate.Run{
+			ID:          runID,
+			IssueID:     issue.ID,
+			IssueKey:    issue.Identifier,
+			Status:      runstate.RunStatusRunning,
+			Attempt:     attempt,
+			WorkflowRef: cfg.WorkflowRef,
+			StartedAt:   now,
+		}, now.Add(cfg.StateStore.LeaseTimeout))
+		if errors.Is(err, runstate.ErrRunClaimed) {
+			cancel()
+			return SkipSummary{
+				IssueID:  issue.ID,
+				IssueKey: issue.Identifier,
+				State:    issue.State,
+				Reason:   string(policy.ReasonAlreadyClaimed),
+			}, nil, false
+		}
+		if err != nil {
+			cancel()
+			return SkipSummary{
+				IssueID:  issue.ID,
+				IssueKey: issue.Identifier,
+				State:    issue.State,
+				Reason:   "state_store_claim_failed",
+			}, nil, false
+		}
+	}
+	r.state.start(issue, runID, "", attempt, now, cancel)
 	return SkipSummary{}, runCtx, true
 }
 
@@ -508,7 +607,20 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 	}
 	r.mu.Lock()
 	r.state.updateWorkspace(issue.ID, ws.Path)
+	record := r.state.running[issue.ID]
 	r.mu.Unlock()
+	if err := r.persistRunUpdate(ctx, record); err != nil {
+		exitErr = err.Error()
+		r.emitEvent(ctx, runEventWithError(
+			issue,
+			observability.EventOrchestratorRunFailed,
+			observability.RunStatusFailed,
+			attempt,
+			"action=state_store_update run_status=failed",
+			err,
+		))
+		return
+	}
 	r.emitEvent(ctx, runEventWithFields(
 		issue,
 		observability.EventWorkspacePrepared,
@@ -607,6 +719,7 @@ func (r *Runtime) completeRun(
 	if normalExit {
 		r.state.completed[issueID] = struct{}{}
 		entry := runstate.Retry{
+			RunID:    record.RunID,
 			IssueID:  issueID,
 			IssueKey: record.IssueKey,
 			Attempt:  1,
@@ -627,6 +740,9 @@ func (r *Runtime) completeRun(
 		event.RetryAttempt = entry.Attempt
 		event.RetryDueAt = &dueAt
 		r.mu.Unlock()
+		r.persistSession(ctx, record, sessionID, metadata, now)
+		r.persistRunCompletion(ctx, record, runstate.RunStatusCompleted, now, "")
+		r.persistRetry(ctx, entry)
 		r.emitEvent(ctx, event)
 		return
 	}
@@ -635,12 +751,15 @@ func (r *Runtime) completeRun(
 	if attempt < 1 {
 		attempt = 1
 	}
+	delay := failureRetryDelay(attempt, cfg.Agent.MaxRetryBackoff)
 	entry := runstate.Retry{
-		IssueID:  issueID,
-		IssueKey: record.IssueKey,
-		Attempt:  attempt,
-		DueAt:    now.Add(failureRetryDelay(attempt, cfg.Agent.MaxRetryBackoff)),
-		Error:    exitErr,
+		RunID:     record.RunID,
+		IssueID:   issueID,
+		IssueKey:  record.IssueKey,
+		Attempt:   attempt,
+		DueAt:     now.Add(delay),
+		BackoffMS: int(delay / time.Millisecond),
+		Error:     exitErr,
 	}
 	r.state.scheduleRetry(entry)
 	dueAt := entry.DueAt
@@ -669,6 +788,9 @@ func (r *Runtime) completeRun(
 		}
 	}
 	r.mu.Unlock()
+	r.persistSession(ctx, record, sessionID, metadata, now)
+	r.persistRunCompletion(ctx, record, runstate.RunStatusFailed, now, exitErr)
+	r.persistRetry(ctx, entry)
 	r.emitEvent(ctx, event)
 }
 
@@ -718,6 +840,7 @@ func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) Recon
 			if !ok {
 				continue
 			}
+			r.persistRunCompletion(ctx, stopped, runstate.RunStatusStopped, r.deps.Clock(), "terminal_state")
 			if stopped.IssueKey != "" && issue.Identifier == "" {
 				issue.Identifier = stopped.IssueKey
 			}
@@ -748,6 +871,7 @@ func (r *Runtime) reconcileRunning(ctx context.Context, cfg config.Config) Recon
 			if !ok {
 				continue
 			}
+			r.persistRunCompletion(ctx, stopped, runstate.RunStatusStopped, r.deps.Clock(), "inactive_state")
 			summary.Stopped = append(summary.Stopped, StopSummary{
 				IssueID:  issue.ID,
 				IssueKey: issue.Identifier,
@@ -771,6 +895,80 @@ func (r *Runtime) stopRunning(issueID string) (RunRecord, bool) {
 		record.cancel()
 	}
 	return record, ok
+}
+
+func (r *Runtime) persistRunUpdate(ctx context.Context, record RunRecord) error {
+	if r.deps.StateStore == nil || record.RunID == "" {
+		return nil
+	}
+	return r.deps.StateStore.UpdateRun(ctx, runstate.Run{
+		ID:            record.RunID,
+		IssueID:       record.IssueID,
+		IssueKey:      record.IssueKey,
+		Attempt:       record.Attempt,
+		WorkspacePath: record.WorkspacePath,
+		SessionID:     record.SessionID,
+		UpdatedAt:     r.deps.Clock(),
+	})
+}
+
+func (r *Runtime) persistRunCompletion(
+	ctx context.Context,
+	record RunRecord,
+	status runstate.RunStatus,
+	at time.Time,
+	errText string,
+) {
+	if r.deps.StateStore == nil || record.RunID == "" {
+		return
+	}
+	_ = r.persistRunUpdate(ctx, record)
+	_ = r.deps.StateStore.CompleteRun(ctx, record.RunID, status, at, errText)
+}
+
+func (r *Runtime) persistRetry(ctx context.Context, entry runstate.Retry) {
+	if r.deps.StateStore == nil {
+		return
+	}
+	_ = r.deps.StateStore.UpsertRetry(ctx, entry)
+}
+
+func (r *Runtime) deleteRetry(ctx context.Context, issueID string) {
+	if r.deps.StateStore == nil {
+		return
+	}
+	_ = r.deps.StateStore.DeleteRetry(ctx, issueID)
+}
+
+func (r *Runtime) persistSession(
+	ctx context.Context,
+	record RunRecord,
+	sessionID string,
+	metadata agent.RunMetadata,
+	now time.Time,
+) {
+	if r.deps.StateStore == nil || record.RunID == "" || sessionID == "" {
+		return
+	}
+	_ = r.deps.StateStore.RecordSession(ctx, runstate.Session{
+		ID:              sessionID,
+		RunID:           record.RunID,
+		IssueID:         record.IssueID,
+		IssueKey:        record.IssueKey,
+		ThreadID:        metadata.ThreadID,
+		TurnID:          metadata.TurnID,
+		Status:          metadata.Status,
+		Summary:         metadata.Summary,
+		WorkspacePath:   firstNonEmpty(metadata.WorkspacePath, record.WorkspacePath),
+		InputTokens:     metadata.Usage.InputTokens,
+		OutputTokens:    metadata.Usage.OutputTokens,
+		ReasoningTokens: metadata.Usage.ReasoningOutputTokens,
+		TotalTokens:     metadata.Usage.TotalTokens,
+		CachedTokens:    metadata.Usage.CachedInputTokens,
+		TurnCount:       metadata.TurnCount,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
 }
 
 // CleanupTerminalWorkspaces removes workspaces for currently terminal tracker issues.
@@ -870,6 +1068,7 @@ func (r *Runtime) cleanupIssueWorkspace(
 }
 
 func (r *Runtime) requeueRetriesAfterFetchError(
+	ctx context.Context,
 	cfg config.Config,
 	entries []runstate.Retry,
 	now time.Time,
@@ -880,8 +1079,11 @@ func (r *Runtime) requeueRetriesAfterFetchError(
 	for _, entry := range entries {
 		entry.Attempt++
 		entry.Error = "retry poll failed"
-		entry.DueAt = now.Add(failureRetryDelay(entry.Attempt, cfg.Agent.MaxRetryBackoff))
+		delay := failureRetryDelay(entry.Attempt, cfg.Agent.MaxRetryBackoff)
+		entry.DueAt = now.Add(delay)
+		entry.BackoffMS = int(delay / time.Millisecond)
 		r.state.requeueRetry(entry)
+		r.persistRetry(ctx, entry)
 		requeued = append(requeued, entry)
 	}
 	return requeued
@@ -910,6 +1112,7 @@ func (r *Runtime) handleDueRetries(
 				IssueKey: entry.IssueKey,
 				Reason:   "retry_issue_not_candidate",
 			})
+			r.deleteRetry(ctx, entry.IssueID)
 			r.emitEvent(ctx, retryEventFromEntry(
 				entry,
 				observability.EventRetryReleased,
@@ -925,6 +1128,7 @@ func (r *Runtime) handleDueRetries(
 		eligibility := policy.CheckEligibility(cfg.Tracker, issue, runtimeSnapshot)
 		if !eligibility.Allowed {
 			summary.Retries.Released = append(summary.Retries.Released, skipFromPolicy(issue, eligibility))
+			r.deleteRetry(ctx, entry.IssueID)
 			event := retryEventForIssue(
 				issue,
 				entry,
@@ -940,7 +1144,7 @@ func (r *Runtime) handleDueRetries(
 		skip, runCtx, started := r.tryStart(ctx, issue, cfg, entry.Attempt)
 		if !started {
 			if skip.Reason == "global_concurrency_limit" || skip.Reason == "state_concurrency_limit" {
-				requeued := r.requeueRetryForSlots(cfg, issue, entry)
+				requeued := r.requeueRetryForSlots(ctx, cfg, issue, entry)
 				summary.Retries.Requeued = append(summary.Retries.Requeued, requeued)
 				event := retryEventForIssue(
 					issue,
@@ -954,6 +1158,7 @@ func (r *Runtime) handleDueRetries(
 				continue
 			}
 			summary.Retries.Released = append(summary.Retries.Released, skip)
+			r.deleteRetry(ctx, entry.IssueID)
 			event := retryEventForIssue(
 				issue,
 				entry,
@@ -986,6 +1191,7 @@ func (r *Runtime) handleDueRetries(
 }
 
 func (r *Runtime) requeueRetryForSlots(
+	ctx context.Context,
 	cfg config.Config,
 	issue tracker.Issue,
 	entry runstate.Retry,
@@ -993,11 +1199,14 @@ func (r *Runtime) requeueRetryForSlots(
 	entry.IssueKey = issue.Identifier
 	entry.Attempt++
 	entry.Error = "no available orchestrator slots"
-	entry.DueAt = r.deps.Clock().Add(failureRetryDelay(entry.Attempt, cfg.Agent.MaxRetryBackoff))
+	delay := failureRetryDelay(entry.Attempt, cfg.Agent.MaxRetryBackoff)
+	entry.DueAt = r.deps.Clock().Add(delay)
+	entry.BackoffMS = int(delay / time.Millisecond)
 
 	r.mu.Lock()
 	r.state.requeueRetry(entry)
 	r.mu.Unlock()
+	r.persistRetry(ctx, entry)
 	return entry
 }
 
@@ -1075,6 +1284,22 @@ func (r *Runtime) emitEvent(ctx context.Context, event observability.Event) {
 		event.Time = r.deps.Clock()
 	}
 	_ = r.deps.Logger.Log(ctx, event)
+	if r.deps.StateStore == nil {
+		return
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	_ = r.deps.StateStore.RecordEvent(ctx, runstate.Event{
+		ID:          runstate.NewID("event"),
+		IssueID:     event.IssueID,
+		IssueKey:    event.IssueIdentifier,
+		SessionID:   event.SessionID,
+		Type:        string(event.Type),
+		PayloadJSON: string(payload),
+		CreatedAt:   event.Time,
+	})
 }
 
 func runEvent(
