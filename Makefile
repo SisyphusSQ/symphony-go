@@ -3,7 +3,7 @@ CMD_PATH := ./cmd/symphony
 BIN_DIR := bin
 BIN := $(BIN_DIR)/symphony
 
-.PHONY: all build clean cli-help cli-run-help fmt harness-check harness-review-gate harness-verify help test test-fake-e2e tidy verify
+.PHONY: all build clean cli-help cli-run-help fmt harness-check harness-review-gate harness-verify help test test-fake-e2e test-real-integration tidy verify
 
 all: build
 
@@ -14,6 +14,7 @@ help:
 		'  make tidy                Run go mod tidy' \
 		'  make test                Run go test ./...' \
 		'  make test-fake-e2e       Run deterministic fake Linear + fake Codex E2E profile' \
+		'  make test-real-integration Run opt-in real Linear/Codex dogfood profile' \
 		'  make build               Build bin/symphony' \
 		'  make cli-help            Smoke test root CLI help' \
 		'  make cli-run-help        Smoke test run command help' \
@@ -32,6 +33,9 @@ test:
 
 test-fake-e2e:
 	$(GO) test ./internal/orchestrator -run TestFakeE2EProfile -count=1
+
+test-real-integration:
+	$(GO) test ./internal/orchestrator -run TestRealIntegrationProfile -count=1 -v
 
 build:
 	mkdir -p $(BIN_DIR)

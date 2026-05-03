@@ -7,7 +7,6 @@ tracker:
     - Todo
     - In Progress
     - Rework
-    - Merging
   terminal_states:
     - Done
     - Closed
@@ -43,11 +42,10 @@ hooks:
   timeout_ms: 60000
 
 agent:
-  max_concurrent_agents: 5
+  max_concurrent_agents: 1
   max_turns: 20
   max_concurrent_agents_by_state:
-    Merging: 3
-    Rework: 3
+    Rework: 1
 
 codex:
   command: codex app-server
