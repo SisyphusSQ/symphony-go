@@ -274,6 +274,15 @@ Technology:
 - Vite
 - TypeScript
 
+Ant Design development guidance:
+
+- When implementing Web GUI components with Ant Design Vue, use the local
+  `antd` skill before writing component code.
+- Query component APIs, demos, design tokens, and semantic styling metadata
+  through `@ant-design/cli` instead of relying on memory.
+- Use structured CLI output (`--format json`) for lookups and run the relevant
+  Ant Design lint or usage checks after component changes.
+
 Repository layout:
 
 ```text
