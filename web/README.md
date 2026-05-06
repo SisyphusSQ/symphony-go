@@ -17,6 +17,39 @@ npm run build
 `npm run dev` serves the Vite app on `127.0.0.1:5173` and proxies `/api/v1` to
 `http://127.0.0.1:4002` by default.
 
+## Development Proxy
+
+Start the Go operator server on loopback first, then run the Vite dev server:
+
+```bash
+# from the repository root
+symphony run --workflow WORKFLOW.md --port 4002 --instance dev
+
+# from web/
+npm run dev
+```
+
+Use `VITE_OPERATOR_PROXY_TARGET` when the operator server is not listening on
+`http://127.0.0.1:4002`.
+
+## Production Serving
+
+The Go operator server serves the production dashboard from `web/dist` when
+`web/dist/index.html` exists. Build the frontend before starting the operator
+server from the repository root:
+
+```bash
+cd web
+npm run build
+cd ..
+symphony run --workflow WORKFLOW.md --port 4002 --instance dev
+```
+
+Production browser requests to `/` and frontend history routes return the Vite
+`index.html`. `/api/v1/*` remains reserved for the Go operator API. Browser
+refreshes on `/runs/<run_id>` return the dashboard when the request accepts
+`text/html`; non-browser requests keep the existing operator run JSON behavior.
+
 ## API Mode
 
 - `VITE_OPERATOR_API_BASE`: optional absolute API base URL. When unset, the app
@@ -34,6 +67,3 @@ npm run build
 - Timeline category filters map to the backend `category` query parameter.
 - Raw payloads are shown as expandable redacted JSON and can be copied to the
   clipboard. The UI intentionally does not provide a JSON download entry.
-
-This slice does not add Go static asset serving. Production embedding/serving is
-tracked separately.

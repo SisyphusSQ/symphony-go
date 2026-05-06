@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
@@ -60,6 +62,84 @@ func TestHandlerServesStatusRunsReadinessAndMetrics(t *testing.T) {
 			t.Fatalf("metrics missing %q:\n%s", want, recorder.Body.String())
 		}
 	}
+}
+
+func TestHandlerServesDashboardAssetsAndPreservesAPIPrecedence(t *testing.T) {
+	runtime := &fakeRuntime{
+		status: orchestrator.StatusRunning,
+		snapshot: observability.Snapshot{
+			GeneratedAt:    time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+			LifecycleState: string(orchestrator.StatusRunning),
+		},
+	}
+	handler := NewHandler(runtime, Config{DashboardFS: dashboardFixture()})
+
+	root := serveRequest(t, handler, http.MethodGet, "/", "")
+	assertRecorder(t, root, http.StatusOK, `id="app"`)
+	assertHeaderContains(t, root, "Content-Type", "text/html")
+	assertHeaderContains(t, root, "Cache-Control", "no-cache")
+
+	script := serveRequest(t, handler, http.MethodGet, "/assets/app.js", "")
+	assertRecorder(t, script, http.StatusOK, "window.__dashboard")
+	assertHeaderContains(t, script, "Content-Type", "javascript")
+	assertHeaderContains(t, script, "Cache-Control", "max-age=31536000")
+
+	head := serveRequest(t, handler, http.MethodHead, "/assets/app.js", "")
+	assertRecorder(t, head, http.StatusOK, "")
+	if head.Body.Len() != 0 {
+		t.Fatalf("HEAD body length = %d, want 0", head.Body.Len())
+	}
+
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"configured":false`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/missing", http.StatusNotFound, `"code":"not_found"`)
+	assertStatus(t, handler, http.MethodGet, "/assets/missing.js", http.StatusNotFound, `"dashboard asset not found"`)
+
+	history := serveRequest(t, handler, http.MethodGet, "/operator/detail", "")
+	assertRecorder(t, history, http.StatusOK, `id="app"`)
+	assertHeaderContains(t, history, "Content-Type", "text/html")
+}
+
+func TestHandlerServesDashboardForBrowserRunDetailRoute(t *testing.T) {
+	runtime := &fakeRuntime{
+		status: orchestrator.StatusRunning,
+		snapshot: observability.Snapshot{
+			GeneratedAt:    time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+			LifecycleState: string(orchestrator.StatusRunning),
+			ActiveRuns: []observability.RunSnapshot{{
+				IssueID:         "issue-1",
+				IssueIdentifier: "TOO-1",
+				RunStatus:       observability.RunStatusRunning,
+			}},
+		},
+	}
+	handler := NewHandler(runtime, Config{DashboardFS: dashboardFixture()})
+
+	browserRefresh := serveRequest(t, handler, http.MethodGet, "/runs/TOO-1", "text/html")
+	assertRecorder(t, browserRefresh, http.StatusOK, `id="app"`)
+	assertHeaderContains(t, browserRefresh, "Content-Type", "text/html")
+
+	assertStatus(t, handler, http.MethodGet, "/runs/TOO-1", http.StatusOK, `"status":"running"`)
+
+	missingBrowserRoute := serveRequest(t, handler, http.MethodGet, "/runs/run-missing", "text/html")
+	assertRecorder(t, missingBrowserRoute, http.StatusOK, `id="app"`)
+}
+
+func TestOperatorServerDashboardSmoke(t *testing.T) {
+	runtime := &fakeRuntime{
+		status: orchestrator.StatusRunning,
+		snapshot: observability.Snapshot{
+			GeneratedAt:    time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+			LifecycleState: string(orchestrator.StatusRunning),
+		},
+	}
+	server := httptest.NewServer(NewHandler(runtime, Config{DashboardFS: dashboardFixture()}))
+	defer server.Close()
+
+	assertHTTPGet(t, server, "/", "", http.StatusOK, `id="app"`)
+	assertHTTPGet(t, server, "/assets/app.js", "", http.StatusOK, "window.__dashboard")
+	assertHTTPGet(t, server, "/api/v1/state", "", http.StatusOK, `"configured":false`)
+	assertHTTPGet(t, server, "/runs/run-missing", "text/html", http.StatusOK, `id="app"`)
+	assertHTTPGet(t, server, "/assets/missing.js", "", http.StatusNotFound, `"dashboard asset not found"`)
 }
 
 func TestHandlerControlEndpointsAndErrorSemantics(t *testing.T) {
@@ -118,6 +198,83 @@ func assertStatus(
 	}
 	if wantBody != "" && !strings.Contains(recorder.Body.String(), wantBody) {
 		t.Fatalf("%s %s body missing %q:\n%s", method, path, wantBody, recorder.Body.String())
+	}
+}
+
+func serveRequest(t *testing.T, handler http.Handler, method string, path string, accept string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	handler.ServeHTTP(recorder, req)
+	return recorder
+}
+
+func assertRecorder(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantBody string) {
+	t.Helper()
+
+	if recorder.Code != wantStatus {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, wantStatus, recorder.Body.String())
+	}
+	if wantBody != "" && !strings.Contains(recorder.Body.String(), wantBody) {
+		t.Fatalf("body missing %q:\n%s", wantBody, recorder.Body.String())
+	}
+}
+
+func assertHeaderContains(t *testing.T, recorder *httptest.ResponseRecorder, key string, want string) {
+	t.Helper()
+
+	got := recorder.Header().Get(key)
+	if !strings.Contains(got, want) {
+		t.Fatalf("%s header = %q, want substring %q", key, got, want)
+	}
+}
+
+func assertHTTPGet(
+	t *testing.T,
+	server *httptest.Server,
+	path string,
+	accept string,
+	wantStatus int,
+	wantBody string,
+) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+	if err != nil {
+		t.Fatalf("NewRequest(%s) error = %v", path, err)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", path, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read %s body error = %v", path, err)
+	}
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("GET %s status = %d, want %d; body=%s", path, resp.StatusCode, wantStatus, string(body))
+	}
+	if wantBody != "" && !strings.Contains(string(body), wantBody) {
+		t.Fatalf("GET %s body missing %q:\n%s", path, wantBody, string(body))
+	}
+}
+
+func dashboardFixture() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html": {
+			Data: []byte(`<!doctype html><html><body><div id="app"></div><script type="module" src="/assets/app.js"></script></body></html>`),
+		},
+		"assets/app.js": {
+			Data: []byte(`window.__dashboard = true;`),
+		},
 	}
 }
 

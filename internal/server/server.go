@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,11 +27,13 @@ const (
 
 // Config describes the local operator server.
 type Config struct {
-	BindHost   string
-	Port       int
-	Instance   string
-	StateStore runstate.QueryStore
-	Redactor   safety.Redactor
+	BindHost     string
+	Port         int
+	Instance     string
+	StateStore   runstate.QueryStore
+	Redactor     safety.Redactor
+	DashboardFS  fs.FS
+	DashboardDir string
 }
 
 // Runtime is the orchestrator surface needed by the operator HTTP API.
@@ -81,6 +84,7 @@ func NewHandler(runtime Runtime, cfg Config) http.Handler {
 	if cfg.BindHost == "" {
 		cfg.BindHost = DefaultBindHost
 	}
+	cfg.DashboardFS = resolveDashboardFS(cfg)
 	mux := http.NewServeMux()
 	h := &handler{runtime: runtime, config: cfg}
 	mux.HandleFunc("/", h.handleRoot)
@@ -103,11 +107,18 @@ func NewHandler(runtime Runtime, cfg Config) http.Handler {
 }
 
 func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if isAPIV1Path(r.URL.Path) {
 		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
 		return
 	}
-	if !allowMethod(w, r, http.MethodGet) {
+	if !allowMethod(w, r, http.MethodGet, http.MethodHead) {
+		return
+	}
+	if h.serveDashboard(w, r) {
+		return
+	}
+	if r.URL.Path != "/" {
+		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -221,10 +232,6 @@ func (h *handler) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleRunPath(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "runtime is unavailable")
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/runs/")
 	path = strings.Trim(path, "/")
 	if path == "" {
@@ -234,6 +241,13 @@ func (h *handler) handleRunPath(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(path, "/")
 	if len(parts) > 2 {
 		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
+		return
+	}
+	if len(parts) == 1 && acceptsDashboardHTML(r) && h.serveDashboard(w, r) {
+		return
+	}
+	if h.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "runtime is unavailable")
 		return
 	}
 
