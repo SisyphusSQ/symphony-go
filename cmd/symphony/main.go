@@ -15,10 +15,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SisyphusSQ/symphony-go/internal/agent/codex"
 	"github.com/SisyphusSQ/symphony-go/internal/config"
+	"github.com/SisyphusSQ/symphony-go/internal/hooks"
 	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
 	httpserver "github.com/SisyphusSQ/symphony-go/internal/server"
+	"github.com/SisyphusSQ/symphony-go/internal/tracker/linear"
 	"github.com/SisyphusSQ/symphony-go/internal/workflow"
+	"github.com/SisyphusSQ/symphony-go/internal/workspace"
 )
 
 func main() {
@@ -33,7 +37,7 @@ func newRootCommand() *cobra.Command {
 		Use:   "symphony",
 		Short: "Run the Symphony agent orchestration service",
 		Long: "Symphony coordinates issue-tracker work, isolated workspaces, and coding agent runs.\n" +
-			"This Go port currently exposes the command surface while runtime packages are implemented.",
+			"The Go runtime wires tracker, workspace, hooks, and Codex dispatch dependencies from the workflow.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -77,7 +81,7 @@ func newRunCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("startup failed: %w", err)
 			}
-			runtime, err := orchestrator.NewRuntime(path)
+			runtime, err := newRuntimeForRun(path, cfg)
 			if err != nil {
 				return fmt.Errorf("startup failed: %w", err)
 			}
@@ -127,6 +131,27 @@ func newRunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.instance, "instance", "", "operator-defined instance name")
 
 	return cmd
+}
+
+type runRuntimeFactory func(workflowPath string, cfg config.Config) (*orchestrator.Runtime, error)
+
+var newRuntimeForRun runRuntimeFactory = newProductionRuntime
+
+func newProductionRuntime(workflowPath string, cfg config.Config) (*orchestrator.Runtime, error) {
+	trackerClient, err := linear.NewFromTrackerConfig(cfg.Tracker)
+	if err != nil {
+		return nil, fmt.Errorf("build linear tracker: %w", err)
+	}
+	workspaceManager, err := workspace.NewManager(cfg.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("build workspace manager: %w", err)
+	}
+	return orchestrator.NewRuntimeWithDependencies(workflowPath, orchestrator.Dependencies{
+		Tracker:   trackerClient,
+		Workspace: workspaceManager,
+		Hooks:     hooks.NewRunner(cfg.Hooks),
+		Runner:    codex.NewRunner(cfg.Codex),
+	})
 }
 
 func newValidateCommand() *cobra.Command {

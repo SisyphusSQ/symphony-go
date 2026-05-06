@@ -24,6 +24,9 @@ temp/
 # Local Symphony runtime docs and workflow may contain machine-local tokens.
 docs/symphony/
 
+# Local dogfood credentials and machine-specific inputs.
+/docs/test/real-dogfood/secrets.env
+
 # Local Symphony workspaces and runtime output.
 sandbox-workspace/
 symphony-workspaces/

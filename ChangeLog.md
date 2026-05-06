@@ -20,9 +20,13 @@
 17. [TOO-133] 新增单实例 operator controls 与本地 HTTP status surface，覆盖 pause/resume/drain、cancel/retry、health/ready/runs/metrics endpoints、`--port` precedence 和 loopback bind 默认值。
 18. [TOO-134] 新增 production baseline safety controls，覆盖 safe Codex sandbox defaults、secret redaction、redacted audit events、tool-call audit 和 per-issue runtime/token/estimated-cost guardrails。
 19. [TOO-135] 新增 typed Linear write APIs，覆盖 issue comment create/update、workpad upsert、state transition、URL attachment 和 fake GraphQL 测试。
+20. 新增 Go CLI production runtime wiring，`symphony run` 会从 workflow 装配 Linear tracker、workspace manager、lifecycle hooks 和 Codex runner 后进入真实 dispatch loop。
+21. 修正默认 dogfood workspace clone hook，避免 Symphony metadata 使 `git clone "$SOURCE_REPO_URL" .` 在新 workspace 中失败，并支持 retry 时补齐缺失 checkout。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
 2. 切换 Go module 到 github.com/SisyphusSQ/symphony-go，并初始化 GitHub 仓库远端。
 3. [TOO-115] 新增 Go port conformance charter 与 SPEC 对齐矩阵，记录必选能力、推荐扩展、验证入口和延期决策。
 4. [TOO-136] 新增 Go cutover runbook 与 replacement gate，明确 NO-GO 准入、rollback、post-cutover monitoring 和 residual-risk 处理。
+5. 新增 Go self-dogfood 详细测试方案，明确外部 runner 与 Go binary 证明边界、本地敏感输入文件、真实预检、完整调度、恢复回滚和脱敏证据要求。
+6. [TOO-138] 完成一次 Go binary real self-dogfood smoke，记录 4002 operator endpoint、workspace/state DB、Codex invocation、Linear workpad/state writeback 与 residual risk。

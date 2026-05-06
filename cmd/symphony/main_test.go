@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SisyphusSQ/symphony-go/internal/config"
+	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
 )
 
 func TestRootHelp(t *testing.T) {
@@ -150,6 +151,9 @@ func TestValidateRejectsDirectoryWorkflowPath(t *testing.T) {
 func TestRunPerformsStartupValidationWithoutStartingRuntime(t *testing.T) {
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	writeWorkflow(t, workflowPath)
+	withRunRuntimeFactory(t, func(path string, _ config.Config) (*orchestrator.Runtime, error) {
+		return orchestrator.NewRuntime(path)
+	})
 
 	output, err := executeCommand(t, "run", "--port", "0", "--instance", "dev", workflowPath)
 	if err != nil {
@@ -164,6 +168,46 @@ func TestRunPerformsStartupValidationWithoutStartingRuntime(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("run output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestNewProductionRuntimeWiresDispatchDependencies(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	workspaceRoot := filepath.Join(dir, "workspaces")
+	content := strings.Join([]string{
+		"---",
+		"tracker:",
+		"  kind: linear",
+		"  endpoint: http://127.0.0.1:1/graphql",
+		"  api_key: literal-token",
+		"  project_slug: symphony-go",
+		"  active_states:",
+		"    - Todo",
+		"  terminal_states:",
+		"    - Done",
+		"workspace:",
+		"  root: " + workspaceRoot,
+		"codex:",
+		"  command: codex app-server",
+		"---",
+		"Prompt",
+		"",
+	}, "\n")
+	if err := os.WriteFile(workflowPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow fixture: %v", err)
+	}
+	cfg, err := config.Load(workflowPath)
+	if err != nil {
+		t.Fatalf("load workflow config: %v", err)
+	}
+
+	runtime, err := newProductionRuntime(workflowPath, cfg)
+	if err != nil {
+		t.Fatalf("newProductionRuntime() error = %v", err)
+	}
+	if err := runtime.DispatchReady(); err != nil {
+		t.Fatalf("expected production runtime to be dispatch-ready: %v", err)
 	}
 }
 
@@ -267,6 +311,16 @@ func executeCommand(t *testing.T, args ...string) (string, error) {
 
 func configForServerTest(port int) config.Config {
 	return config.Config{Server: config.Server{Port: port}}
+}
+
+func withRunRuntimeFactory(t *testing.T, factory runRuntimeFactory) {
+	t.Helper()
+
+	previous := newRuntimeForRun
+	newRuntimeForRun = factory
+	t.Cleanup(func() {
+		newRuntimeForRun = previous
+	})
 }
 
 func writeWorkflow(t *testing.T, path string) {

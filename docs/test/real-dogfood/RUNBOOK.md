@@ -1,11 +1,14 @@
-# Real Linear + Codex Dogfood Runbook
+# Real Linear + Codex Self-Dogfood Runbook
 
 ## Purpose
 
-This runbook defines the controlled real dogfood profile for Symphony Go. It is
-separate from the deterministic fake E2E profile and exists to prove that the Go
-runtime can use real Linear credentials, a real workspace root, and the local
-Codex command in a low-risk environment.
+This runbook defines the controlled real Linear/Codex profile used for Go
+`symphony-go` self-dogfood runs. It is separate from deterministic fake E2E
+coverage and from the external Elixir Symphony runner.
+
+The real preflight command proves credential and target-issue readiness only.
+Full self-dogfood evidence requires starting the Go binary with real tracker,
+workspace, hook, Codex runner, and state-store dependencies.
 
 ## Scope
 
@@ -19,7 +22,12 @@ Covered by this profile:
 
 Not covered by this profile:
 
+- Go binary dispatch
+- workspace mutation by the Go binary
+- Codex turn execution through the Go binary
+- Linear workpad/state writeback by the Go binary
 - production cutover
+- external Elixir runner dogfood evidence
 - fleet or multi-repo operation
 - automatic merge behavior
 - storing credentials or raw external command output in committed docs
@@ -31,8 +39,9 @@ Go test skip before reading Linear or touching a workspace.
 
 When explicitly enabled, the current command performs real Linear read requests
 against the configured project and verifies the local `codex` command. It does
-not create, update, transition, or delete Linear issues. Full dogfood execution
-must use an isolated issue/workspace and the cleanup steps below.
+not create, update, transition, or delete Linear issues. Full self-dogfood
+execution must use the Go binary, an isolated issue/workspace, and the cleanup
+steps below.
 
 ## Prerequisites
 
@@ -43,7 +52,7 @@ export SYMPHONY_REAL_INTEGRATION=1
 export LINEAR_API_KEY=<redacted>
 export SYMPHONY_WORKSPACE_ROOT=/absolute/path/to/isolated/symphony-go-workspaces
 export SOURCE_REPO_URL=https://github.com/SisyphusSQ/symphony-go.git
-export SYMPHONY_REAL_DOGFOOD_ISSUE=TOO-131
+export SYMPHONY_REAL_DOGFOOD_ISSUE=TOO-xxx
 ```
 
 Dogfood target assumptions:
@@ -75,7 +84,7 @@ SYMPHONY_REAL_INTEGRATION=1 \
 LINEAR_API_KEY="$LINEAR_API_KEY" \
 SYMPHONY_WORKSPACE_ROOT="$SYMPHONY_WORKSPACE_ROOT" \
 SOURCE_REPO_URL="$(git remote get-url origin)" \
-SYMPHONY_REAL_DOGFOOD_ISSUE=TOO-131 \
+SYMPHONY_REAL_DOGFOOD_ISSUE="$SYMPHONY_REAL_DOGFOOD_ISSUE" \
 make test-real-integration
 ```
 
@@ -107,21 +116,28 @@ Explicit result:
 
 For the current read/preflight profile, no external cleanup is required.
 
-For a future full dogfood run that creates or modifies artifacts:
+For a future full self-dogfood run that creates or modifies artifacts:
 
 1. Move or restore the dogfood Linear issue to the intended review state.
 2. Delete any temporary test-only Linear issue that was created solely for this profile.
-3. Remove the isolated workspace directory under `SYMPHONY_WORKSPACE_ROOT`.
+3. Preserve or remove the isolated workspace directory according to the test
+   plan. Preserve it when the operator requested evidence retention.
 4. Remove local logs or raw outputs that contain host paths, tokens, or external IDs.
 5. Record only a sanitized summary in this runbook and the Linear workpad.
 
 ## Current Validation Result
 
-Last updated for `TOO-131` on 2026-05-03:
+Last updated for `TOO-138` on 2026-05-06:
 
 ```text
-make test-real-integration
-PASS with explicit SKIP: SYMPHONY_REAL_INTEGRATION was not set.
+go test ./... -count=1
+PASS
+
+make harness-check
+PASS
+
+SYMPHONY_REAL_INTEGRATION=1 ... make test-real-integration
+PASS: real Linear/Codex preflight saw exactly one active candidate, TOO-138.
 ```
 
 Observed environment summary, with values intentionally redacted:
@@ -129,19 +145,39 @@ Observed environment summary, with values intentionally redacted:
 ```text
 LINEAR_API_KEY: present
 SYMPHONY_WORKSPACE_ROOT: present
-SOURCE_REPO_URL: missing
+SOURCE_REPO_URL: present
+SYMPHONY_STATE_DB: present
+SYMPHONY_REAL_DOGFOOD_ISSUE: TOO-138
 codex command: present
-explicit enablement: missing
+explicit enablement: present
+operator port: 4002
 ```
+
+Full Go binary dogfood summary:
+
+- The Go `bin/symphony` binary started the operator server on port `4002`.
+- `/healthz`, `/readyz`, `/status`, `/runs`, and `/metrics` responded from the
+  outer operator shell.
+- The first attempt found a real workspace hook bug: the Symphony metadata file
+  made `git clone "$SOURCE_REPO_URL" .` unsafe in a new workspace, and retries
+  skipped `after_create`.
+- After making the clone hook idempotent, the retained workspace became a real
+  checkout, the Go runtime dispatched `TOO-138`, invoked Codex, updated the
+  existing `## Codex Workpad`, and moved the issue to `Human Review`.
+- The state database recorded dispatch/start/workspace events, hook failures,
+  retry scheduling, and inactive-state stop after the issue left active states.
+- The external Elixir Symphony runner was not used for this proof.
 
 ## Residual Risks
 
-- The current committed command proves skip/fail semantics and real Linear/Codex
-  preflight readiness, but it did not run a full agent turn in this workspace
-  because the profile was not explicitly enabled.
-- Full dogfood remains blocked until `SYMPHONY_REAL_INTEGRATION=1`, an isolated
-  active dogfood issue, `SOURCE_REPO_URL`, workspace root, and local Codex auth
-  are all supplied for the run.
-- The Go CLI `run` command still reports missing dispatch dependencies when
-  constructed without injected runtime collaborators; full production-style
-  daemon dogfood remains separate from this controlled profile.
+- The Codex worker sandbox could not directly connect to `127.0.0.1:4002`; HTTP
+  endpoint response evidence came from the outer operator shell.
+- The rerun used an ignored current-worktree overlay so the dogfood workspace
+  could see uncommitted Go runtime wiring. A final replacement proof should
+  rerun after those changes are committed or otherwise available from the clone
+  source.
+- Restart recovery after an interrupted Codex turn was not covered in this run;
+  the observed recovery surface was retry after hook failure and inactive-state
+  stop after Linear moved to `Human Review`.
+- A successful external Elixir runner smoke remains useful operational evidence,
+  but it is not proof that the Go binary can self-dogfood.

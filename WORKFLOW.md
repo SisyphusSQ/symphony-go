@@ -31,11 +31,22 @@ workspace:
 
 hooks:
   after_create: |
-    git clone "$SOURCE_REPO_URL" .
+    if [ ! -d .git ]; then
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      git clone "$SOURCE_REPO_URL" "$tmp/repo"
+      cp -a "$tmp/repo"/. .
+    fi
     go version
     go mod download
 
   before_run: |
+    if [ ! -d .git ]; then
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      git clone "$SOURCE_REPO_URL" "$tmp/repo"
+      cp -a "$tmp/repo"/. .
+    fi
     git fetch origin main
     git status --short
 
