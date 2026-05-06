@@ -23,6 +23,7 @@
 20. 新增 Go CLI production runtime wiring，`symphony run` 会从 workflow 装配 Linear tracker、workspace manager、lifecycle hooks 和 Codex runner 后进入真实 dispatch loop。
 21. 修正默认 dogfood workspace clone hook，避免 Symphony metadata 使 `git clone "$SOURCE_REPO_URL" .` 在新 workspace 中失败，并支持 retry 时补齐缺失 checkout。
 22. [TOO-139] 新增稳定 `/api/v1` operator state/runs 只读契约，覆盖 state summary、run list/query、run detail、统一 error envelope 与无 durable state store 兼容路径。
+23. [TOO-140] 新增脱敏 run event timeline API 与 issue latest-run lookup，覆盖 SQLite event projection、分页、category filter、redaction 和 no-event 语义。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
