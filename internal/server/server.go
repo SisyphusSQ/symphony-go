@@ -12,6 +12,7 @@ import (
 
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
+	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 )
 
 const (
@@ -24,9 +25,10 @@ const (
 
 // Config describes the local operator server.
 type Config struct {
-	BindHost string
-	Port     int
-	Instance string
+	BindHost   string
+	Port       int
+	Instance   string
+	StateStore runstate.QueryStore
 }
 
 // Runtime is the orchestrator surface needed by the operator HTTP API.
@@ -87,6 +89,9 @@ func NewHandler(runtime Runtime, cfg Config) http.Handler {
 	mux.HandleFunc("/doctor", h.handleDoctor)
 	mux.HandleFunc("/runs", h.handleRuns)
 	mux.HandleFunc("/runs/", h.handleRunPath)
+	mux.HandleFunc("/api/v1/state", h.handleAPIState)
+	mux.HandleFunc("/api/v1/runs", h.handleAPIRuns)
+	mux.HandleFunc("/api/v1/runs/", h.handleAPIRunPath)
 	mux.HandleFunc("/orchestrator/pause", h.handleLifecycleControl("pause"))
 	mux.HandleFunc("/orchestrator/resume", h.handleLifecycleControl("resume"))
 	mux.HandleFunc("/orchestrator/drain", h.handleLifecycleControl("drain"))

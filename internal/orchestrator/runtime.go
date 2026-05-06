@@ -110,6 +110,14 @@ func (r *Runtime) Status() Status {
 	return r.status
 }
 
+// StateQueryStore returns the optional durable state read model for operator APIs.
+func (r *Runtime) StateQueryStore() runstate.QueryStore {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queryStore, _ := r.deps.StateStore.(runstate.QueryStore)
+	return queryStore
+}
+
 // MarkActive records an active issue without coupling reload to dispatch state.
 func (r *Runtime) MarkActive(issueID string) {
 	r.mu.Lock()
@@ -162,6 +170,7 @@ func (r *Runtime) Snapshot() observability.Snapshot {
 	activeRuns := make([]observability.RunSnapshot, 0, len(r.state.running))
 	for _, record := range r.state.running {
 		activeRuns = append(activeRuns, observability.RunSnapshot{
+			RunID:           record.RunID,
 			IssueID:         record.IssueID,
 			IssueIdentifier: record.IssueKey,
 			SessionID:       record.SessionID,
@@ -180,6 +189,7 @@ func (r *Runtime) Snapshot() observability.Snapshot {
 	retryQueue := make([]observability.RetrySnapshot, 0, len(r.state.retries))
 	for _, entry := range r.state.retries {
 		retryQueue = append(retryQueue, observability.RetrySnapshot{
+			RunID:           entry.RunID,
 			IssueID:         entry.IssueID,
 			IssueIdentifier: entry.IssueKey,
 			RetryState:      observability.RetryStateForError(entry.Error),
