@@ -118,6 +118,48 @@ export interface RunDetail {
   retry?: RetryInfo;
 }
 
+export type TimelineCategory =
+  | "lifecycle"
+  | "message"
+  | "command"
+  | "tool"
+  | "diff"
+  | "resource"
+  | "guardrail"
+  | "error";
+
+export type TimelineCategoryFilter = TimelineCategory | "all";
+
+export interface RunTimelineEvent {
+  sequence: number;
+  id: string;
+  at: string;
+  category: TimelineCategory | string;
+  severity: "debug" | "info" | "warning" | "error" | string;
+  title: string;
+  summary: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  run_id: string;
+  session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  duration_ms?: number;
+  token_totals?: Partial<TokenTotals>;
+  payload: unknown;
+}
+
+export interface RunEventPage {
+  rows: RunTimelineEvent[];
+  limit: number;
+  next_cursor?: string;
+}
+
+export interface RunEventFilters {
+  category: TimelineCategoryFilter;
+  limit: number;
+}
+
 export interface RunFilters {
   statuses: RunStatus[];
   issue: string;
@@ -134,6 +176,7 @@ export interface OperatorApiClient {
   getState(): Promise<OperatorResult<StateResponse>>;
   getRuns(filters: RunFilters): Promise<OperatorResult<RunPage>>;
   getRunDetail(runID: string): Promise<OperatorResult<RunDetail>>;
+  getRunEvents(runID: string, filters: RunEventFilters): Promise<OperatorResult<RunEventPage>>;
 }
 
 export type FallbackMode = "auto" | "always" | "never";
@@ -165,6 +208,7 @@ export interface FetchOperatorApiClientOptions {
 }
 
 const DEFAULT_RUN_LIMIT = 50;
+export const DEFAULT_EVENT_LIMIT = 100;
 
 export const defaultRunFilters: RunFilters = {
   statuses: [],
@@ -180,6 +224,22 @@ export const runStatusOptions: RunStatus[] = [
   "stopped",
   "interrupted",
 ];
+
+export const timelineCategories: TimelineCategory[] = [
+  "lifecycle",
+  "message",
+  "command",
+  "tool",
+  "diff",
+  "resource",
+  "guardrail",
+  "error",
+];
+
+export const defaultRunEventFilters: RunEventFilters = {
+  category: "all",
+  limit: DEFAULT_EVENT_LIMIT,
+};
 
 export function createFetchOperatorApiClient(
   options: FetchOperatorApiClientOptions = {},
@@ -226,6 +286,15 @@ export function createFetchOperatorApiClient(
         requiredFallback(fallback).getRunDetail(cleanRunID),
       );
     },
+    getRunEvents(runID, filters) {
+      const cleanRunID = runID.trim();
+      if (!cleanRunID) {
+        throw new OperatorApiError("run id is required", { code: "invalid_run_id" });
+      }
+      return request(buildRunEventsPath(cleanRunID, filters), () =>
+        requiredFallback(fallback).getRunEvents(cleanRunID, filters),
+      );
+    },
   };
 }
 
@@ -233,6 +302,7 @@ export function createMockOperatorApiClient(
   state: StateResponse,
   runs: RunRow[],
   details: Record<string, RunDetail>,
+  events: Record<string, RunTimelineEvent[]> = {},
 ): OperatorApiClient {
   return {
     async getState() {
@@ -258,6 +328,22 @@ export function createMockOperatorApiClient(
       }
       return { data: clone(detail), source: "mock" };
     },
+    async getRunEvents(runID, filters) {
+      if (!details[runID]) {
+        throw new OperatorApiError("mock run not found", {
+          code: "run_not_found",
+          status: 404,
+        });
+      }
+      const rows = applyRunEventFilters(events[runID] ?? [], filters);
+      return {
+        data: {
+          rows,
+          limit: filters.limit || DEFAULT_EVENT_LIMIT,
+        },
+        source: "mock",
+      };
+    },
   };
 }
 
@@ -273,6 +359,20 @@ export function buildRunsPath(filters: RunFilters): string {
     values.set("issue", issue);
   }
   return `/api/v1/runs?${values.toString()}`;
+}
+
+export function buildRunEventsPath(runID: string, filters: RunEventFilters): string {
+  const cleanRunID = runID.trim();
+  if (!cleanRunID) {
+    throw new OperatorApiError("run id is required", { code: "invalid_run_id" });
+  }
+  const values = new URLSearchParams();
+  const limit = filters.limit || DEFAULT_EVENT_LIMIT;
+  values.set("limit", String(limit));
+  if (isTimelineCategory(filters.category)) {
+    values.set("category", filters.category);
+  }
+  return `/api/v1/runs/${encodeURIComponent(cleanRunID)}/events?${values.toString()}`;
 }
 
 async function fetchJSON<T>(url: string, fetcher: typeof fetch): Promise<T> {
@@ -334,6 +434,21 @@ function applyRunFilters(rows: RunRow[], filters: RunFilters): RunRow[] {
     })
     .slice(0, limit)
     .map(clone);
+}
+
+function applyRunEventFilters(
+  rows: RunTimelineEvent[],
+  filters: RunEventFilters,
+): RunTimelineEvent[] {
+  const limit = filters.limit || DEFAULT_EVENT_LIMIT;
+  return rows
+    .filter((row) => !isTimelineCategory(filters.category) || row.category === filters.category)
+    .slice(0, limit)
+    .map(clone);
+}
+
+export function isTimelineCategory(value: string): value is TimelineCategory {
+  return timelineCategories.includes(value as TimelineCategory);
 }
 
 function normalizeBaseURL(baseURL: string): string {

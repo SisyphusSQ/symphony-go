@@ -27,51 +27,24 @@
         />
       </div>
 
-      <aside class="detail-panel" aria-label="Selected run summary">
-        <div class="panel-heading">
-          <h2>Run Summary</h2>
-          <a-tag v-if="selectedDetail" :color="tagColor(selectedDetail.metadata.status)">
-            {{ selectedDetail.metadata.status }}
-          </a-tag>
-        </div>
+      <div class="detail-panel" aria-label="Selected run detail">
+        <RunDetailSummary
+          :detail="selectedDetail"
+          :error="detailError"
+          :loading="detailLoading"
+        />
+        <RunTimeline
+          :category="eventFilters.category"
+          :error="eventsError"
+          :events="timelineEvents"
+          :loading="eventsLoading"
+          :selected-event-i-d="selectedEventID"
+          @category="updateEventCategory"
+          @select="selectEvent"
+        />
+      </div>
 
-        <a-spin :spinning="detailLoading">
-          <a-alert v-if="detailError" type="error" show-icon :message="detailError" />
-          <a-empty v-else-if="!selectedDetail" description="Select a run" />
-          <a-descriptions
-            v-else
-            size="small"
-            :column="1"
-            bordered
-            class="detail-descriptions"
-          >
-            <a-descriptions-item label="Issue">
-              {{ selectedDetail.issue.identifier || selectedDetail.issue.id }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Run ID">
-              <span class="mono">{{ selectedDetail.metadata.run_id }}</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="Attempt">
-              #{{ selectedDetail.metadata.attempt }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Runtime">
-              {{ formatRuntime(selectedDetail.metadata.runtime_seconds) }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Session">
-              {{ selectedDetail.session.id || "-" }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Workspace">
-              <span class="workspace-path">{{ selectedDetail.workspace.path || "-" }}</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="Latest">
-              {{ selectedDetail.latest_event?.summary || selectedDetail.session.summary || "-" }}
-            </a-descriptions-item>
-            <a-descriptions-item v-if="selectedDetail.failure" label="Failure">
-              <span class="failure-text">{{ selectedDetail.failure.error }}</span>
-            </a-descriptions-item>
-          </a-descriptions>
-        </a-spin>
-      </aside>
+      <TimelineEventDetail :event="selectedEvent" />
     </section>
   </main>
 </template>
@@ -79,11 +52,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 
-import { formatRuntime, tagColor } from "../api/format";
 import type { OperatorApiClient } from "../api/operator";
 import RunFilters from "../components/RunFilters.vue";
 import RunList from "../components/RunList.vue";
+import RunDetailSummary from "../components/RunDetailSummary.vue";
+import RunTimeline from "../components/RunTimeline.vue";
 import StatusBar from "../components/StatusBar.vue";
+import TimelineEventDetail from "../components/TimelineEventDetail.vue";
 import { useDashboardData } from "../composables/useDashboardData";
 
 const props = defineProps<{
@@ -94,17 +69,25 @@ const {
   state,
   runs,
   selectedDetail,
+  timelineEvents,
+  selectedEvent,
+  selectedEventID,
   selectedRunID,
   loading,
   detailLoading,
+  eventsLoading,
   error,
   detailError,
+  eventsError,
   source,
   fallbackReason,
   filters,
+  eventFilters,
   loadDashboard,
   selectRun,
+  selectEvent,
   updateFilters,
+  updateEventCategory,
 } = useDashboardData(props.client);
 
 const sourceLabel = computed(() => (source.value === "api" ? "API live" : "Mock data"));
