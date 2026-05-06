@@ -1,0 +1,14 @@
+SYMPHONY STATUS
+generated: 2026-05-06T09:00:00Z  lifecycle: running  ready: not_ready  source: memory
+agents: 0  runtime: 0s  tokens: 0  rate_limits: n/a
+ready_error: dispatch dependencies are not configured
+
+RUNNING
+(none)
+
+RETRY / BACKOFF
+(none)
+
+LATEST COMPLETED / FAILED
+ISSUE      STAGE        AGE/TURN     TOKENS   SESSION        LATEST EVENT
+TOO-143    failed       2m/turn-1    30       session...cdef guardrail stop

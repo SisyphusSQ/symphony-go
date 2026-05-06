@@ -1,0 +1,9 @@
+SYMPHONY RUN DETAIL
+issue: TOO-141  run: run-141  status: running  attempt: 2
+session: session...7890  runtime: 5m  tokens: 3.2k  latest: agent accepted
+
+TIMELINE
+SEQ  AT       CATEGORY   SEV   EVENT
+1    08:55:10 lifecycle  info  Run started - run started
+2    08:55:20 command    info  Command - command=go test ./...
+3    08:55:30 error      error Error - startup failed

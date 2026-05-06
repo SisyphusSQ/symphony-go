@@ -1,0 +1,13 @@
+SYMPHONY STATUS
+generated: 2026-05-06T09:00:00Z  lifecycle: running  ready: ready  source: state-store
+agents: 1  runtime: 5m  tokens: 3.2k  rate_limits: remaining=42
+
+RUNNING
+ISSUE      STAGE        AGE/TURN     TOKENS   SESSION        LATEST EVENT
+TOO-141    running      5m/turn-2    3.2k     session...7890 tool=linear_graphql success=true
+
+RETRY / BACKOFF
+(none)
+
+LATEST COMPLETED / FAILED
+(none)
