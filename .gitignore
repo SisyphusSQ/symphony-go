@@ -45,3 +45,8 @@ build/
 *.out
 coverage.out
 coverage.html
+
+# Frontend
+web/node_modules/
+web/dist/
+web/coverage/

@@ -25,6 +25,7 @@
 22. [TOO-139] 新增稳定 `/api/v1` operator state/runs 只读契约，覆盖 state summary、run list/query、run detail、统一 error envelope 与无 durable state store 兼容路径。
 23. [TOO-140] 新增脱敏 run event timeline API 与 issue latest-run lookup，覆盖 SQLite event projection、分页、category filter、redaction 和 no-event 语义。
 24. [TOO-141] 新增只读 `symphony tui` status 与 run detail 视图，覆盖 `/api/v1` state/latest/events projection、紧凑表格、session id 压缩、宽度裁剪和 timeline 渲染。
+25. [TOO-142] 新增 Vue 3 + Ant Design Vue operator Web GUI shell，覆盖 `/api/v1` state/runs/detail client、dashboard 状态栏、run list 查询、mock fixture 与前端测试/构建入口。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
