@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +24,7 @@ func TestRootHelp(t *testing.T) {
 		"symphony [command]",
 		"validate",
 		"run",
+		"tui",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("root help missing %q:\n%s", want, output)
@@ -44,6 +47,95 @@ func TestRunHelp(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("run help missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestTUIStatusCommandUsesAPIV1State(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		if gotPath != "/api/v1/state" {
+			t.Fatalf("unexpected path: %s", gotPath)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"generated_at":"2026-05-06T09:00:00Z",
+			"lifecycle":{"state":"running"},
+			"ready":{"ok":true},
+			"counts":{"running":0,"retrying":0},
+			"running":[],
+			"retrying":[],
+			"latest_completed_or_failed":[],
+			"tokens":{"total_tokens":0},
+			"runtime":{"total_seconds":0},
+			"rate_limit":{"latest":null},
+			"state_store":{"configured":false}
+		}`))
+	}))
+	defer server.Close()
+
+	output, err := executeCommand(t, "tui", "--endpoint", server.URL, "--width", "100")
+	if err != nil {
+		t.Fatalf("expected tui status to succeed: %v", err)
+	}
+	if !strings.Contains(output, "SYMPHONY STATUS") || !strings.Contains(output, "RUNNING") {
+		t.Fatalf("unexpected tui output:\n%s", output)
+	}
+	if gotPath != "/api/v1/state" {
+		t.Fatalf("path = %q, want /api/v1/state", gotPath)
+	}
+}
+
+func TestTUIDetailRunUsesLatestAndEvents(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.RequestURI() {
+		case "/api/v1/issues/TOO-141/latest":
+			_, _ = w.Write([]byte(`{
+				"metadata":{"run_id":"run-141","status":"running","attempt":1,"started_at":"2026-05-06T08:55:00Z","runtime_seconds":30},
+				"issue":{"id":"issue-141","identifier":"TOO-141"},
+				"workspace":{},
+				"session":{"id":"session-abcdef1234567890"},
+				"token_totals":{"total_tokens":12}
+			}`))
+		case "/api/v1/runs/run-141/events?limit=200":
+			_, _ = w.Write([]byte(`{
+				"rows":[{"sequence":1,"id":"event-1","at":"2026-05-06T08:55:01Z","category":"lifecycle","severity":"info","title":"Run started","summary":"run started","issue_id":"issue-141","issue_identifier":"TOO-141","run_id":"run-141","payload":{}}],
+				"limit":200
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	output, err := executeCommand(t, "tui", "--endpoint", server.URL, "--run", "TOO-141")
+	if err != nil {
+		t.Fatalf("expected tui detail to succeed: %v", err)
+	}
+	for _, want := range []string{"SYMPHONY RUN DETAIL", "TOO-141", "Run started - run started"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	wantPaths := []string{
+		"/api/v1/issues/TOO-141/latest",
+		"/api/v1/runs/run-141/events?limit=200",
+	}
+	if strings.Join(paths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("paths = %#v, want %#v", paths, wantPaths)
+	}
+}
+
+func TestTUIRejectsAmbiguousDetailFlags(t *testing.T) {
+	_, err := executeCommand(t, "tui", "--run", "TOO-141", "--run-id", "run-141")
+	if err == nil {
+		t.Fatal("expected tui with --run and --run-id to fail")
+	}
+	if !strings.Contains(err.Error(), "provide either --run or --run-id") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

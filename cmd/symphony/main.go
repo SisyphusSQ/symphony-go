@@ -18,9 +18,11 @@ import (
 	"github.com/SisyphusSQ/symphony-go/internal/agent/codex"
 	"github.com/SisyphusSQ/symphony-go/internal/config"
 	"github.com/SisyphusSQ/symphony-go/internal/hooks"
+	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
 	httpserver "github.com/SisyphusSQ/symphony-go/internal/server"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker/linear"
+	tuiui "github.com/SisyphusSQ/symphony-go/internal/tui"
 	"github.com/SisyphusSQ/symphony-go/internal/workflow"
 	"github.com/SisyphusSQ/symphony-go/internal/workspace"
 )
@@ -46,6 +48,7 @@ func newRootCommand() *cobra.Command {
 		newRunCommand(),
 		newValidateCommand(),
 		newHTTPCommand("status", "Show orchestrator runtime status", http.MethodGet, "/status"),
+		newTUICommand(),
 		newHTTPCommand("pause", "Pause dispatching new issue runs", http.MethodPost, "/orchestrator/pause"),
 		newHTTPCommand("resume", "Resume dispatching issue runs", http.MethodPost, "/orchestrator/resume"),
 		newHTTPCommand("drain", "Stop accepting new work and wait for active runs", http.MethodPost, "/orchestrator/drain"),
@@ -258,6 +261,76 @@ type serverOptions struct {
 
 type httpCommandOptions struct {
 	endpoint string
+}
+
+type tuiCommandOptions struct {
+	endpoint string
+	run      string
+	runID    string
+	width    int
+}
+
+func newTUICommand() *cobra.Command {
+	opts := tuiCommandOptions{
+		endpoint: defaultOperatorEndpoint(),
+		width:    100,
+	}
+	cmd := &cobra.Command{
+		Use:   "tui",
+		Short: "Show read-only operator TUI status or run detail",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTUICommand(cmd, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", opts.endpoint, "operator HTTP endpoint")
+	cmd.Flags().StringVar(&opts.run, "run", "", "show latest run detail for issue identifier")
+	cmd.Flags().StringVar(&opts.runID, "run-id", "", "show run detail for run id")
+	cmd.Flags().IntVar(&opts.width, "width", opts.width, "render width for non-interactive TUI output")
+	return cmd
+}
+
+func runTUICommand(cmd *cobra.Command, opts tuiCommandOptions) error {
+	if strings.TrimSpace(opts.run) != "" && strings.TrimSpace(opts.runID) != "" {
+		return errors.New("provide either --run or --run-id, not both")
+	}
+	client, err := tuiui.NewClient(opts.endpoint, http.DefaultClient)
+	if err != nil {
+		return err
+	}
+	renderOpts := tuiui.RenderOptions{Width: opts.width}
+	if strings.TrimSpace(opts.run) == "" && strings.TrimSpace(opts.runID) == "" {
+		state, err := client.State(cmd.Context())
+		if err != nil {
+			return err
+		}
+		cmd.Print(tuiui.RenderStatus(state, renderOpts))
+		return nil
+	}
+
+	var detail observability.RunDetail
+	if strings.TrimSpace(opts.run) != "" {
+		runDetail, err := client.LatestRunForIssue(cmd.Context(), opts.run)
+		if err != nil {
+			return err
+		}
+		detail = runDetail
+	} else {
+		runDetail, err := client.RunDetail(cmd.Context(), opts.runID)
+		if err != nil {
+			return err
+		}
+		detail = runDetail
+	}
+	if strings.TrimSpace(detail.Metadata.RunID) == "" {
+		return errors.New("operator API response did not include run id")
+	}
+	events, err := client.RunEvents(cmd.Context(), detail.Metadata.RunID)
+	if err != nil {
+		return err
+	}
+	cmd.Print(tuiui.RenderDetail(tuiui.RenderDetailInput{Detail: detail, Events: events}, renderOpts))
+	return nil
 }
 
 func resolveServerOptions(

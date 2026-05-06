@@ -1,0 +1,12 @@
+SYMPHONY STATUS
+generated: 2026-05-06T09:00:00Z  lifecycle: idle  ready: ready  source: memory
+agents: 0  runtime: 0s  tokens: 0  rate_limits: n/a
+
+RUNNING
+(none)
+
+RETRY / BACKOFF
+(none)
+
+LATEST COMPLETED / FAILED
+(none)

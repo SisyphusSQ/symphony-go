@@ -1,0 +1,13 @@
+SYMPHONY STATUS
+generated: 2026-05-06T09:00:00Z  lifecycle: running  ready: ready  source: memory
+agents: 1  runtime: 0s  tokens: 0  rate_limits: n/a
+
+RUNNING
+(none)
+
+RETRY / BACKOFF
+ISSUE      STAGE        AGE/TURN     TOKENS   SESSION        LATEST EVENT
+TOO-142    retrying     in 2m/try-2  0        n/a            temporary failure
+
+LATEST COMPLETED / FAILED
+(none)
