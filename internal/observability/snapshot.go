@@ -12,6 +12,7 @@ type Snapshot struct {
 
 // RunSnapshot is the status row for one active run.
 type RunSnapshot struct {
+	RunID           string    `json:"run_id,omitempty"`
 	IssueID         string    `json:"issue_id"`
 	IssueIdentifier string    `json:"issue_identifier"`
 	SessionID       string    `json:"session_id,omitempty"`
@@ -25,6 +26,7 @@ type RunSnapshot struct {
 
 // RetrySnapshot is the status row for one queued retry.
 type RetrySnapshot struct {
+	RunID           string    `json:"run_id,omitempty"`
 	IssueID         string    `json:"issue_id"`
 	IssueIdentifier string    `json:"issue_identifier"`
 	RetryState      string    `json:"retry_state"`

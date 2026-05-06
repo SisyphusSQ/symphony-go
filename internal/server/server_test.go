@@ -2,15 +2,18 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
+	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 )
 
 func TestHandlerServesStatusRunsReadinessAndMetrics(t *testing.T) {
@@ -210,5 +213,181 @@ func TestRunsPayloadJSONShape(t *testing.T) {
 	})
 	if payload.Counts["running"] != 0 || payload.Counts["retrying"] != 0 {
 		t.Fatalf("payload counts = %#v, want zero running/retrying", payload.Counts)
+	}
+}
+
+func TestAPIV1StateRunsAndRunDetailWithDurableStore(t *testing.T) {
+	ctx := context.Background()
+	store, err := runstate.OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	started := time.Date(2026, 5, 6, 8, 0, 0, 0, time.UTC)
+	finished := started.Add(2 * time.Minute)
+	seedCompletedRun(t, ctx, store, started, finished)
+
+	runtime := &fakeRuntime{
+		status: orchestrator.StatusRunning,
+		snapshot: observability.Snapshot{
+			GeneratedAt:    started.Add(3 * time.Minute),
+			LifecycleState: string(orchestrator.StatusRunning),
+		},
+	}
+	handler := NewHandler(runtime, Config{StateStore: store})
+
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"configured":true`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"completed":1`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"run_id":"run-completed"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"total_tokens":30`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"remaining":42`)
+
+	assertStatus(
+		t,
+		handler,
+		http.MethodGet,
+		"/api/v1/runs?status=completed&issue=TOO-10&limit=1",
+		http.StatusOK,
+		`"run_id":"run-completed"`,
+	)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed", http.StatusOK, `"summary":"agent finished"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed", http.StatusOK, `"session":{"id":"session-1"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/missing", http.StatusNotFound, `"code":"run_not_found"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed/events", http.StatusNotFound, `"code":"not_found"`)
+}
+
+func TestAPIV1NoStateStoreUsesRuntimeSnapshot(t *testing.T) {
+	now := time.Date(2026, 5, 6, 9, 0, 0, 0, time.UTC)
+	runtime := &fakeRuntime{
+		status: orchestrator.StatusRunning,
+		snapshot: observability.Snapshot{
+			GeneratedAt:    now,
+			LifecycleState: string(orchestrator.StatusRunning),
+			ActiveRuns: []observability.RunSnapshot{{
+				RunID:           "run-active",
+				IssueID:         "issue-active",
+				IssueIdentifier: "TOO-1",
+				SessionID:       "session-active",
+				RunStatus:       observability.RunStatusRunning,
+				Attempt:         1,
+				WorkspacePath:   "/tmp/workspaces/TOO-1",
+				StartedAt:       now.Add(-time.Minute),
+				SecondsRunning:  60,
+			}},
+			RetryQueue: []observability.RetrySnapshot{{
+				RunID:           "run-retry",
+				IssueID:         "issue-retry",
+				IssueIdentifier: "TOO-2",
+				Attempt:         2,
+				DueAt:           now.Add(time.Minute),
+				Error:           "temporary failure",
+			}},
+		},
+	}
+	handler := NewHandler(runtime, Config{})
+
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"configured":false`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"running":1`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"retrying":1`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?limit=1", http.StatusOK, `"next_cursor":`)
+	cursor := base64.RawURLEncoding.EncodeToString([]byte("offset:1"))
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?limit=1&cursor="+cursor, http.StatusOK, `"run_id":"run-active"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?status=running&issue=TOO-1", http.StatusOK, `"run_id":"run-active"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?status=completed", http.StatusOK, `"rows":[]`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-active", http.StatusOK, `"session":{"id":"session-active"`)
+}
+
+func TestAPIV1QueryValidationAndMethodSemantics(t *testing.T) {
+	runtime := &fakeRuntime{
+		status: orchestrator.StatusRunning,
+		snapshot: observability.Snapshot{
+			GeneratedAt:    time.Date(2026, 5, 6, 9, 0, 0, 0, time.UTC),
+			LifecycleState: string(orchestrator.StatusRunning),
+		},
+	}
+	handler := NewHandler(runtime, Config{})
+
+	assertStatus(t, handler, http.MethodPost, "/api/v1/state", http.StatusMethodNotAllowed, `"code":"method_not_allowed"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?status=bogus", http.StatusBadRequest, `"code":"invalid_status"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?limit=0", http.StatusBadRequest, `"code":"invalid_limit"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?cursor=not-base64", http.StatusBadRequest, `"code":"invalid_cursor"`)
+
+	cursor := base64.RawURLEncoding.EncodeToString([]byte("not-offset"))
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?cursor="+cursor, http.StatusBadRequest, `"code":"invalid_cursor"`)
+	assertStatus(t, handler, http.MethodPost, "/api/v1/runs/run-id", http.StatusMethodNotAllowed, `"code":"method_not_allowed"`)
+}
+
+func seedCompletedRun(
+	t *testing.T,
+	ctx context.Context,
+	store *runstate.SQLiteStore,
+	started time.Time,
+	finished time.Time,
+) {
+	t.Helper()
+
+	run := runstate.Run{
+		ID:            "run-completed",
+		IssueID:       "issue-completed",
+		IssueKey:      "TOO-10",
+		Attempt:       1,
+		WorkspacePath: "/tmp/workspaces/TOO-10",
+		SessionID:     "session-1",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		StartedAt:     started,
+	}
+	if err := store.ClaimRun(ctx, run, started.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun() error = %v", err)
+	}
+	if err := store.UpdateRun(ctx, run); err != nil {
+		t.Fatalf("UpdateRun() error = %v", err)
+	}
+	if err := store.RecordSession(ctx, runstate.Session{
+		ID:            "session-1",
+		RunID:         "run-completed",
+		IssueID:       "issue-completed",
+		IssueKey:      "TOO-10",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		Status:        "completed",
+		Summary:       "done",
+		WorkspacePath: "/tmp/workspaces/TOO-10",
+		InputTokens:   10,
+		OutputTokens:  20,
+		TotalTokens:   30,
+		TurnCount:     1,
+		CreatedAt:     started.Add(time.Second),
+		UpdatedAt:     started.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("RecordSession() error = %v", err)
+	}
+	if err := store.RecordEvent(ctx, runstate.Event{
+		ID:          "event-rate-limit",
+		RunID:       "run-completed",
+		IssueID:     "issue-completed",
+		IssueKey:    "TOO-10",
+		SessionID:   "session-1",
+		Type:        "agent.rate_limits_updated",
+		PayloadJSON: `{"kind":"rate_limits_updated","payload":{"remaining":42}}`,
+		CreatedAt:   started.Add(30 * time.Second),
+	}); err != nil {
+		t.Fatalf("RecordEvent(rate limit) error = %v", err)
+	}
+	if err := store.RecordEvent(ctx, runstate.Event{
+		ID:          "event-latest",
+		RunID:       "run-completed",
+		IssueID:     "issue-completed",
+		IssueKey:    "TOO-10",
+		SessionID:   "session-1",
+		Type:        "agent.run.completed",
+		PayloadJSON: `{"message":"agent finished"}`,
+		CreatedAt:   started.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("RecordEvent(latest) error = %v", err)
+	}
+	if err := store.CompleteRun(ctx, "run-completed", runstate.RunStatusCompleted, finished, ""); err != nil {
+		t.Fatalf("CompleteRun() error = %v", err)
 	}
 }
