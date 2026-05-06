@@ -86,6 +86,83 @@ type RunPage struct {
 	HasMore    bool     `json:"-"`
 }
 
+const (
+	TimelineCategoryLifecycle = "lifecycle"
+	TimelineCategoryMessage   = "message"
+	TimelineCategoryCommand   = "command"
+	TimelineCategoryTool      = "tool"
+	TimelineCategoryDiff      = "diff"
+	TimelineCategoryResource  = "resource"
+	TimelineCategoryGuardrail = "guardrail"
+	TimelineCategoryError     = "error"
+)
+
+// TimelineCategories lists the stable event categories accepted by the
+// operator timeline API.
+var TimelineCategories = []string{
+	TimelineCategoryLifecycle,
+	TimelineCategoryMessage,
+	TimelineCategoryCommand,
+	TimelineCategoryTool,
+	TimelineCategoryDiff,
+	TimelineCategoryResource,
+	TimelineCategoryGuardrail,
+	TimelineCategoryError,
+}
+
+// TimelineQuery describes a validated run event timeline query.
+type TimelineQuery struct {
+	Category string
+	Limit    int
+	Offset   int
+}
+
+// TimelinePage is a stable paginated event timeline response.
+type TimelinePage struct {
+	Rows       []TimelineEventRow `json:"rows"`
+	Limit      int                `json:"limit"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+	HasMore    bool               `json:"-"`
+}
+
+// TimelineEventRow is one redacted, humanized event returned by the timeline API.
+type TimelineEventRow struct {
+	Sequence        int             `json:"sequence"`
+	ID              string          `json:"id"`
+	At              time.Time       `json:"at"`
+	Category        string          `json:"category"`
+	Severity        string          `json:"severity"`
+	Title           string          `json:"title"`
+	Summary         string          `json:"summary"`
+	IssueID         string          `json:"issue_id"`
+	IssueIdentifier string          `json:"issue_identifier"`
+	RunID           string          `json:"run_id"`
+	SessionID       string          `json:"session_id,omitempty"`
+	ThreadID        string          `json:"thread_id,omitempty"`
+	TurnID          string          `json:"turn_id,omitempty"`
+	Payload         json.RawMessage `json:"payload"`
+}
+
+// RawTimelineEvent is the durable event read model projected into TimelineEventRow.
+type RawTimelineEvent struct {
+	ID              string
+	RunID           string
+	IssueID         string
+	IssueIdentifier string
+	SessionID       string
+	ThreadID        string
+	TurnID          string
+	Type            string
+	PayloadJSON     string
+	At              time.Time
+}
+
+// TimelineRedactor is the subset of safety.Redactor used by timeline projection.
+type TimelineRedactor interface {
+	String(string) string
+	JSON(string) string
+}
+
 // StoreSummary is the durable-state contribution to /api/v1/state.
 type StoreSummary struct {
 	Counts                  map[string]int

@@ -13,6 +13,7 @@ import (
 
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
 	"github.com/SisyphusSQ/symphony-go/internal/orchestrator"
+	"github.com/SisyphusSQ/symphony-go/internal/safety"
 	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 )
 
@@ -117,6 +118,20 @@ func assertStatus(
 	}
 	if wantBody != "" && !strings.Contains(recorder.Body.String(), wantBody) {
 		t.Fatalf("%s %s body missing %q:\n%s", method, path, wantBody, recorder.Body.String())
+	}
+}
+
+func assertNotContains(t *testing.T, handler http.Handler, method string, path string, blocked string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("%s %s status = %d, want 200; body=%s", method, path, recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), blocked) {
+		t.Fatalf("%s %s body leaked %q:\n%s", method, path, blocked, recorder.Body.String())
 	}
 }
 
@@ -235,7 +250,10 @@ func TestAPIV1StateRunsAndRunDetailWithDurableStore(t *testing.T) {
 			LifecycleState: string(orchestrator.StatusRunning),
 		},
 	}
-	handler := NewHandler(runtime, Config{StateStore: store})
+	handler := NewHandler(runtime, Config{
+		StateStore: store,
+		Redactor:   safety.NewRedactorFromLiterals("literal-secret"),
+	})
 
 	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"configured":true`)
 	assertStatus(t, handler, http.MethodGet, "/api/v1/state", http.StatusOK, `"completed":1`)
@@ -254,7 +272,23 @@ func TestAPIV1StateRunsAndRunDetailWithDurableStore(t *testing.T) {
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed", http.StatusOK, `"summary":"agent finished"`)
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed", http.StatusOK, `"session":{"id":"session-1"`)
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/missing", http.StatusNotFound, `"code":"run_not_found"`)
-	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed/events", http.StatusNotFound, `"code":"not_found"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed/events", http.StatusOK, `"category":"resource"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed/events?limit=1", http.StatusOK, `"next_cursor":`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-completed/events?category=tool", http.StatusOK, `"summary":"tool=linear_graphql success=true"`)
+	assertNotContains(t, handler, http.MethodGet, "/api/v1/runs/run-completed/events?category=tool", "literal-secret")
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/missing/events", http.StatusNotFound, `"code":"run_not_found"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/issues/TOO-10/latest", http.StatusOK, `"run_id":"run-completed"`)
+
+	noEventRun := runstate.Run{
+		ID:        "run-no-events",
+		IssueID:   "issue-no-events",
+		IssueKey:  "TOO-NO-EVENTS",
+		StartedAt: started.Add(4 * time.Minute),
+	}
+	if err := store.ClaimRun(ctx, noEventRun, started.Add(9*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun(no-event) error = %v", err)
+	}
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-no-events/events", http.StatusOK, `"rows":[]`)
 }
 
 func TestAPIV1NoStateStoreUsesRuntimeSnapshot(t *testing.T) {
@@ -296,6 +330,8 @@ func TestAPIV1NoStateStoreUsesRuntimeSnapshot(t *testing.T) {
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?status=running&issue=TOO-1", http.StatusOK, `"run_id":"run-active"`)
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?status=completed", http.StatusOK, `"rows":[]`)
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-active", http.StatusOK, `"session":{"id":"session-active"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/issues/TOO-1/latest", http.StatusOK, `"run_id":"run-active"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/issues/UNKNOWN/latest", http.StatusNotFound, `"code":"run_not_found"`)
 }
 
 func TestAPIV1QueryValidationAndMethodSemantics(t *testing.T) {
@@ -316,6 +352,10 @@ func TestAPIV1QueryValidationAndMethodSemantics(t *testing.T) {
 	cursor := base64.RawURLEncoding.EncodeToString([]byte("not-offset"))
 	assertStatus(t, handler, http.MethodGet, "/api/v1/runs?cursor="+cursor, http.StatusBadRequest, `"code":"invalid_cursor"`)
 	assertStatus(t, handler, http.MethodPost, "/api/v1/runs/run-id", http.StatusMethodNotAllowed, `"code":"method_not_allowed"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-id/events?category=bogus", http.StatusBadRequest, `"code":"invalid_category"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs/run-id/events?limit=201", http.StatusBadRequest, `"code":"invalid_limit"`)
+	assertStatus(t, handler, http.MethodPost, "/api/v1/issues/TOO-1/latest", http.StatusMethodNotAllowed, `"code":"method_not_allowed"`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/issues/TOO-1", http.StatusNotFound, `"code":"not_found"`)
 }
 
 func seedCompletedRun(
@@ -374,6 +414,18 @@ func seedCompletedRun(
 		CreatedAt:   started.Add(30 * time.Second),
 	}); err != nil {
 		t.Fatalf("RecordEvent(rate limit) error = %v", err)
+	}
+	if err := store.RecordEvent(ctx, runstate.Event{
+		ID:          "event-tool",
+		RunID:       "run-completed",
+		IssueID:     "issue-completed",
+		IssueKey:    "TOO-10",
+		SessionID:   "session-1",
+		Type:        "agent.tool_call",
+		PayloadJSON: `{"kind":"tool_call","method":"item/tool/call","message":"token=literal-secret","payload":{"tool":"linear_graphql","success":true,"token":"literal-secret"}}`,
+		CreatedAt:   started.Add(45 * time.Second),
+	}); err != nil {
+		t.Fatalf("RecordEvent(tool) error = %v", err)
 	}
 	if err := store.RecordEvent(ctx, runstate.Event{
 		ID:          "event-latest",

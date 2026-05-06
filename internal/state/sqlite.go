@@ -172,6 +172,10 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			payload_json text not null default '{}',
 			created_at text not null
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_events_run_created
+			ON agent_events(run_id, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_runs_issue_updated
+			ON runs(issue_identifier, updated_at, id)`,
 		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, ?)`,
 	}
 

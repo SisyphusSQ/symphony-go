@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	defaultRunLimit  = 50
-	maxRunLimit      = 100
-	stateLatestLimit = 5
+	defaultRunLimit   = 50
+	maxRunLimit       = 100
+	defaultEventLimit = 100
+	maxEventLimit     = 200
+	stateLatestLimit  = 5
 )
 
 var allowedRunStatuses = []string{
@@ -167,6 +169,15 @@ func (h *handler) handleAPIRunPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 2 && parts[1] == "events" {
+		runID, err := pathUnescape(parts[0])
+		if err != nil || strings.TrimSpace(runID) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_run_id", "run id is invalid")
+			return
+		}
+		h.handleAPIRunEvents(w, r, runID)
+		return
+	}
 	if len(parts) != 1 {
 		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
 		return
@@ -193,6 +204,75 @@ func (h *handler) handleAPIRunPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "run_not_found", "run not found")
+}
+
+func (h *handler) handleAPIRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	query, err := parseTimelineQuery(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errorCode(err), err.Error())
+		return
+	}
+	store := h.queryStore()
+	if store == nil {
+		writeError(w, http.StatusServiceUnavailable, "state_store_unavailable", "state store is unavailable")
+		return
+	}
+	page, err := store.QueryRunEvents(r.Context(), runID, query, h.config.Redactor)
+	if err != nil {
+		if errors.Is(err, runstate.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "run_not_found", "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "state_store_query_failed", err.Error())
+		return
+	}
+	if page.HasMore {
+		page.NextCursor = encodeCursor(query.Offset + query.Limit)
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (h *handler) handleAPIIssuePath(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+	if h.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "runtime is unavailable")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/issues/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not_found", "issue identifier is required")
+		return
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "latest" {
+		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
+		return
+	}
+	identifier, err := pathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(identifier) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_issue_identifier", "issue identifier is invalid")
+		return
+	}
+
+	if store := h.queryStore(); store != nil {
+		detail, err := store.LatestRunForIssue(r.Context(), identifier)
+		if err == nil {
+			writeJSON(w, http.StatusOK, redactRunDetail(detail, h.config.Redactor))
+			return
+		}
+		if !errors.Is(err, runstate.ErrRunNotFound) {
+			writeError(w, http.StatusInternalServerError, "state_store_query_failed", err.Error())
+			return
+		}
+	}
+	if detail, ok := latestRunFromSnapshot(h.runtime.Snapshot(), identifier); ok {
+		writeJSON(w, http.StatusOK, redactRunDetail(detail, h.config.Redactor))
+		return
+	}
+	writeError(w, http.StatusNotFound, "run_not_found", "latest run not found")
 }
 
 func (h *handler) queryStore() runstate.QueryStore {
@@ -246,6 +326,38 @@ func parseRunQuery(values url.Values) (observability.RunQuery, error) {
 		}
 	}
 	query.Issue = strings.TrimSpace(values.Get("issue"))
+	return query, nil
+}
+
+func parseTimelineQuery(values url.Values) (observability.TimelineQuery, error) {
+	query := observability.TimelineQuery{Limit: defaultEventLimit}
+	if raw := strings.TrimSpace(values.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit <= 0 {
+			return query, queryError{code: "invalid_limit", message: "limit must be a positive integer"}
+		}
+		if limit > maxEventLimit {
+			return query, queryError{
+				code:    "invalid_limit",
+				message: fmt.Sprintf("limit must be less than or equal to %d", maxEventLimit),
+			}
+		}
+		query.Limit = limit
+	}
+	if raw := strings.TrimSpace(values.Get("cursor")); raw != "" {
+		offset, err := decodeCursor(raw)
+		if err != nil {
+			return query, queryError{code: "invalid_cursor", message: "cursor is invalid"}
+		}
+		query.Offset = offset
+	}
+	if raw := strings.TrimSpace(values.Get("category")); raw != "" {
+		category := strings.ToLower(raw)
+		if !observability.IsTimelineCategory(category) {
+			return query, queryError{code: "invalid_category", message: "category is unsupported: " + category}
+		}
+		query.Category = category
+	}
 	return query, nil
 }
 
@@ -370,6 +482,16 @@ func snapshotRunDetail(snapshot observability.Snapshot, runID string) (observabi
 	return observability.RunDetail{}, false
 }
 
+func latestRunFromSnapshot(snapshot observability.Snapshot, issue string) (observability.RunDetail, bool) {
+	rows := append(rowsFromRunningSnapshot(snapshot.ActiveRuns), rowsFromRetrySnapshot(snapshot.RetryQueue)...)
+	rows = filterRowsByIssue(rows, issue)
+	sortRunRows(rows)
+	if len(rows) == 0 {
+		return observability.RunDetail{}, false
+	}
+	return detailFromSnapshotRow(rows[0]), true
+}
+
 func detailFromSnapshotRow(row observability.RunRow) observability.RunDetail {
 	detail := observability.RunDetail{
 		Metadata: observability.RunMetadata{
@@ -390,6 +512,34 @@ func detailFromSnapshotRow(row observability.RunRow) observability.RunDetail {
 	}
 	if row.ErrorSummary != "" {
 		detail.Failure = &observability.FailureSummary{Error: row.ErrorSummary}
+	}
+	return detail
+}
+
+func redactRunDetail(detail observability.RunDetail, redactor observability.TimelineRedactor) observability.RunDetail {
+	if redactor == nil {
+		return detail
+	}
+	detail.Metadata.RunID = redactor.String(detail.Metadata.RunID)
+	detail.Metadata.Status = redactor.String(detail.Metadata.Status)
+	detail.Issue.ID = redactor.String(detail.Issue.ID)
+	detail.Issue.Identifier = redactor.String(detail.Issue.Identifier)
+	detail.Workspace.Path = redactor.String(detail.Workspace.Path)
+	detail.Session.ID = redactor.String(detail.Session.ID)
+	detail.Session.ThreadID = redactor.String(detail.Session.ThreadID)
+	detail.Session.TurnID = redactor.String(detail.Session.TurnID)
+	detail.Session.Status = redactor.String(detail.Session.Status)
+	detail.Session.Summary = redactor.String(detail.Session.Summary)
+	if detail.LatestEvent != nil {
+		detail.LatestEvent.ID = redactor.String(detail.LatestEvent.ID)
+		detail.LatestEvent.Type = redactor.String(detail.LatestEvent.Type)
+		detail.LatestEvent.Summary = redactor.String(detail.LatestEvent.Summary)
+	}
+	if detail.Failure != nil {
+		detail.Failure.Error = redactor.String(detail.Failure.Error)
+	}
+	if detail.Retry != nil {
+		detail.Retry.Error = redactor.String(detail.Retry.Error)
 	}
 	return detail
 }

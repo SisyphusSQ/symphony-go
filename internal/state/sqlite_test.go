@@ -6,8 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/SisyphusSQ/symphony-go/internal/observability"
+	"github.com/SisyphusSQ/symphony-go/internal/safety"
 )
 
 func TestSQLiteStoreCreatesMigratesAndPersistsRunSessionRetryAndEvent(t *testing.T) {
@@ -199,6 +203,166 @@ func TestSQLiteStoreClaimRejectsActiveLeaseAndAllowsExpiredLease(t *testing.T) {
 	}
 	if got := scalarString(t, store.db, `SELECT status FROM runs WHERE id = 'run-expired'`); got != "interrupted" {
 		t.Fatalf("expired run status = %q, want interrupted", got)
+	}
+}
+
+func TestSQLiteStoreQueryRunEventsProjectsPaginatesFiltersAndRedacts(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	started := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	run := Run{
+		ID:            "run-events",
+		IssueID:       "issue-events",
+		IssueKey:      "TOO-140",
+		Attempt:       1,
+		WorkspacePath: "/tmp/workspaces/TOO-140",
+		SessionID:     "session-events",
+		ThreadID:      "thread-run",
+		TurnID:        "turn-run",
+		StartedAt:     started,
+	}
+	if err := store.ClaimRun(ctx, run, started.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun() error = %v", err)
+	}
+	if err := store.RecordSession(ctx, Session{
+		ID:        "session-events",
+		RunID:     "run-events",
+		IssueID:   "issue-events",
+		IssueKey:  "TOO-140",
+		ThreadID:  "thread-session",
+		TurnID:    "turn-session",
+		Status:    "running",
+		Summary:   "running",
+		CreatedAt: started,
+		UpdatedAt: started,
+	}); err != nil {
+		t.Fatalf("RecordSession() error = %v", err)
+	}
+	events := []Event{
+		{
+			ID:          "event-1",
+			RunID:       "run-events",
+			IssueID:     "issue-events",
+			IssueKey:    "TOO-140",
+			SessionID:   "session-events",
+			Type:        "agent.turn_started",
+			PayloadJSON: `{"kind":"turn_started","message":"turn started"}`,
+			CreatedAt:   started.Add(time.Second),
+		},
+		{
+			ID:          "event-2",
+			RunID:       "run-events",
+			IssueID:     "issue-events",
+			IssueKey:    "TOO-140",
+			SessionID:   "session-events",
+			Type:        "agent.tool_call",
+			PayloadJSON: `{"kind":"tool_call","method":"item/tool/call","message":"token=literal-secret","payload":{"tool":"linear_graphql","success":true,"token":"literal-secret"}}`,
+			CreatedAt:   started.Add(2 * time.Second),
+		},
+		{
+			ID:          "event-3",
+			RunID:       "run-events",
+			IssueID:     "issue-events",
+			IssueKey:    "TOO-140",
+			SessionID:   "session-events",
+			Type:        "agent.rate_limits_updated",
+			PayloadJSON: `{"kind":"rate_limits_updated","method":"account/rateLimits/updated"}`,
+			CreatedAt:   started.Add(3 * time.Second),
+		},
+	}
+	for _, event := range events {
+		if err := store.RecordEvent(ctx, event); err != nil {
+			t.Fatalf("RecordEvent(%s) error = %v", event.ID, err)
+		}
+	}
+
+	redactor := safety.NewRedactorFromLiterals("literal-secret")
+	page, err := store.QueryRunEvents(ctx, "run-events", observability.TimelineQuery{Limit: 2}, redactor)
+	if err != nil {
+		t.Fatalf("QueryRunEvents() error = %v", err)
+	}
+	if len(page.Rows) != 2 || !page.HasMore || page.Rows[0].Sequence != 1 || page.Rows[1].Sequence != 2 {
+		t.Fatalf("page = %#v, want first two rows with hasMore", page)
+	}
+	if page.Rows[1].Category != observability.TimelineCategoryTool {
+		t.Fatalf("second category = %q, want tool", page.Rows[1].Category)
+	}
+	if page.Rows[1].ThreadID != "thread-session" || page.Rows[1].TurnID != "turn-session" {
+		t.Fatalf("thread/turn = %q/%q, want session identifiers", page.Rows[1].ThreadID, page.Rows[1].TurnID)
+	}
+	if strings.Contains(string(page.Rows[1].Payload), "literal-secret") ||
+		strings.Contains(page.Rows[1].Summary, "literal-secret") {
+		t.Fatalf("tool event leaked secret: summary=%q payload=%s", page.Rows[1].Summary, page.Rows[1].Payload)
+	}
+
+	filtered, err := store.QueryRunEvents(ctx, "run-events", observability.TimelineQuery{
+		Category: observability.TimelineCategoryResource,
+		Limit:    10,
+	}, redactor)
+	if err != nil {
+		t.Fatalf("QueryRunEvents(resource) error = %v", err)
+	}
+	if len(filtered.Rows) != 1 || filtered.Rows[0].ID != "event-3" || filtered.Rows[0].Sequence != 3 {
+		t.Fatalf("filtered rows = %#v, want only event-3 with original sequence", filtered.Rows)
+	}
+
+	emptyRun := Run{ID: "run-empty", IssueID: "issue-empty", IssueKey: "TOO-EMPTY", StartedAt: started}
+	if err := store.ClaimRun(ctx, emptyRun, started.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun(empty) error = %v", err)
+	}
+	empty, err := store.QueryRunEvents(ctx, "run-empty", observability.TimelineQuery{Limit: 10}, redactor)
+	if err != nil {
+		t.Fatalf("QueryRunEvents(empty) error = %v", err)
+	}
+	if len(empty.Rows) != 0 || empty.HasMore {
+		t.Fatalf("empty page = %#v, want no rows and no hasMore", empty)
+	}
+
+	if _, err := store.QueryRunEvents(ctx, "missing", observability.TimelineQuery{Limit: 10}, redactor); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("QueryRunEvents(missing) error = %v, want ErrRunNotFound", err)
+	}
+}
+
+func TestSQLiteStoreLatestRunForIssue(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	started := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	firstFinished := started.Add(time.Minute)
+	secondFinished := started.Add(2 * time.Minute)
+	first := Run{ID: "run-first", IssueID: "issue-latest", IssueKey: "TOO-140", StartedAt: started}
+	second := Run{ID: "run-second", IssueID: "issue-latest", IssueKey: "TOO-140", StartedAt: started.Add(time.Minute)}
+	if err := store.ClaimRun(ctx, first, first.StartedAt.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun(first) error = %v", err)
+	}
+	if err := store.CompleteRun(ctx, first.ID, RunStatusCompleted, firstFinished, ""); err != nil {
+		t.Fatalf("CompleteRun(first) error = %v", err)
+	}
+	if err := store.ClaimRun(ctx, second, second.StartedAt.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun(second) error = %v", err)
+	}
+	if err := store.CompleteRun(ctx, second.ID, RunStatusFailed, secondFinished, "failed"); err != nil {
+		t.Fatalf("CompleteRun(second) error = %v", err)
+	}
+
+	latest, err := store.LatestRunForIssue(ctx, "TOO-140")
+	if err != nil {
+		t.Fatalf("LatestRunForIssue() error = %v", err)
+	}
+	if latest.Metadata.RunID != "run-second" || latest.Metadata.Status != "failed" {
+		t.Fatalf("latest = %#v, want run-second failed", latest.Metadata)
+	}
+	if _, err := store.LatestRunForIssue(ctx, "TOO-MISSING"); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("LatestRunForIssue(missing) error = %v, want ErrRunNotFound", err)
 	}
 }
 

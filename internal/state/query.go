@@ -18,6 +18,13 @@ var ErrRunNotFound = errors.New("state_run_not_found")
 type QueryStore interface {
 	QueryRuns(context.Context, observability.RunQuery) (observability.RunPage, error)
 	GetRun(context.Context, string) (observability.RunDetail, error)
+	LatestRunForIssue(context.Context, string) (observability.RunDetail, error)
+	QueryRunEvents(
+		context.Context,
+		string,
+		observability.TimelineQuery,
+		observability.TimelineRedactor,
+	) (observability.TimelinePage, error)
 	StateSummary(context.Context, int) (observability.StoreSummary, error)
 }
 
@@ -78,6 +85,88 @@ func (s *SQLiteStore) GetRun(ctx context.Context, runID string) (observability.R
 	}
 	row.LatestEvent = latest
 	return detailFromRunRow(row), nil
+}
+
+// LatestRunForIssue returns the latest durable run for an issue identifier or id.
+func (s *SQLiteStore) LatestRunForIssue(ctx context.Context, issue string) (observability.RunDetail, error) {
+	if s == nil || s.db == nil {
+		return observability.RunDetail{}, fmt.Errorf("%w: sqlite db is required", ErrInvalidStoreRequest)
+	}
+	issue = strings.TrimSpace(issue)
+	if issue == "" {
+		return observability.RunDetail{}, ErrRunNotFound
+	}
+	rows, err := s.queryStoredRunRows(ctx, issue)
+	if err != nil {
+		return observability.RunDetail{}, err
+	}
+	if len(rows) == 0 {
+		return observability.RunDetail{}, ErrRunNotFound
+	}
+	row := rows[0]
+	latest, err := s.latestEventSummary(ctx, row.RunID)
+	if err != nil {
+		return observability.RunDetail{}, err
+	}
+	row.LatestEvent = latest
+	return detailFromRunRow(row), nil
+}
+
+// QueryRunEvents returns a projected, redacted operation timeline for one run.
+func (s *SQLiteStore) QueryRunEvents(
+	ctx context.Context,
+	runID string,
+	query observability.TimelineQuery,
+	redactor observability.TimelineRedactor,
+) (observability.TimelinePage, error) {
+	if s == nil || s.db == nil {
+		return observability.TimelinePage{}, fmt.Errorf("%w: sqlite db is required", ErrInvalidStoreRequest)
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return observability.TimelinePage{}, ErrRunNotFound
+	}
+	if query.Limit <= 0 {
+		query.Limit = 50
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+	exists, err := s.runExists(ctx, runID)
+	if err != nil {
+		return observability.TimelinePage{}, err
+	}
+	if !exists {
+		return observability.TimelinePage{}, ErrRunNotFound
+	}
+	rawEvents, err := s.queryRawTimelineEvents(ctx, runID)
+	if err != nil {
+		return observability.TimelinePage{}, err
+	}
+
+	projected := make([]observability.TimelineEventRow, 0, len(rawEvents))
+	for index, raw := range rawEvents {
+		row := observability.ProjectTimelineEvent(index+1, raw, redactor)
+		if query.Category != "" && row.Category != query.Category {
+			continue
+		}
+		projected = append(projected, row)
+	}
+
+	start := query.Offset
+	if start > len(projected) {
+		start = len(projected)
+	}
+	end := start + query.Limit
+	hasMore := false
+	if end < len(projected) {
+		hasMore = true
+	} else {
+		end = len(projected)
+	}
+	pageRows := make([]observability.TimelineEventRow, 0, end-start)
+	pageRows = append(pageRows, projected[start:end]...)
+	return observability.TimelinePage{Rows: pageRows, Limit: query.Limit, HasMore: hasMore}, nil
 }
 
 // StateSummary returns durable aggregate data for /api/v1/state.
@@ -309,6 +398,83 @@ func (s *SQLiteStore) queryRetryRows(ctx context.Context, issue string) ([]obser
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+func (s *SQLiteStore) runExists(ctx context.Context, runID string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE id = ? LIMIT 1`, runID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *SQLiteStore) queryRawTimelineEvents(
+	ctx context.Context,
+	runID string,
+) ([]observability.RawTimelineEvent, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT
+			e.id,
+			COALESCE(NULLIF(e.run_id, ''), r.id),
+			COALESCE(NULLIF(e.issue_id, ''), r.issue_id),
+			COALESCE(NULLIF(e.issue_identifier, ''), r.issue_identifier),
+			COALESCE(NULLIF(e.session_id, ''), NULLIF(s.session_id, ''), r.session_id, ''),
+			COALESCE(NULLIF(s.thread_id, ''), r.thread_id, ''),
+			COALESCE(NULLIF(s.turn_id, ''), r.turn_id, ''),
+			e.event_type,
+			e.payload_json,
+			e.created_at
+		 FROM agent_events e
+		 JOIN runs r ON r.id = e.run_id
+		 LEFT JOIN sessions s ON s.session_id = CASE
+			WHEN e.session_id != '' THEN e.session_id
+			ELSE (
+				SELECT latest.session_id FROM sessions latest
+				WHERE latest.run_id = e.run_id
+				ORDER BY latest.updated_at DESC, latest.created_at DESC
+				LIMIT 1
+			)
+		 END
+		 WHERE e.run_id = ?
+		 ORDER BY e.created_at ASC, e.id ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []observability.RawTimelineEvent{}
+	for rows.Next() {
+		var event observability.RawTimelineEvent
+		var createdText string
+		if err := rows.Scan(
+			&event.ID,
+			&event.RunID,
+			&event.IssueID,
+			&event.IssueIdentifier,
+			&event.SessionID,
+			&event.ThreadID,
+			&event.TurnID,
+			&event.Type,
+			&event.PayloadJSON,
+			&createdText,
+		); err != nil {
+			return nil, err
+		}
+		createdAt, err := parseTime(createdText)
+		if err != nil {
+			return nil, err
+		}
+		event.At = createdAt
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func scanRunRow(rows *sql.Rows) (observability.RunRow, error) {
