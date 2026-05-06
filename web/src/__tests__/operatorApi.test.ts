@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildRunEventsPath,
   buildRunsPath,
   createFetchOperatorApiClient,
   OperatorApiError,
@@ -17,6 +18,22 @@ describe("operator API client", () => {
         limit: 25,
       }),
     ).toBe("/api/v1/runs?limit=25&status=running%2Cfailed&issue=TOO-142");
+  });
+
+  it("builds stable run-events query parameters", () => {
+    expect(
+      buildRunEventsPath("run/with spaces", {
+        category: "tool",
+        limit: 20,
+      }),
+    ).toBe("/api/v1/runs/run%2Fwith%20spaces/events?limit=20&category=tool");
+
+    expect(
+      buildRunEventsPath("run-too-142-active", {
+        category: "all",
+        limit: 100,
+      }),
+    ).toBe("/api/v1/runs/run-too-142-active/events?limit=100");
   });
 
   it("decodes API error envelopes", async () => {
@@ -51,6 +68,17 @@ describe("operator API client", () => {
     expect(result.source).toBe("mock");
     expect(result.fallbackReason).toContain("connect ECONNREFUSED");
     expect(result.data.lifecycle.state).toBe(mockState.lifecycle.state);
+  });
+
+  it("loads run events and filters mock timeline categories", async () => {
+    const result = await mockOperatorApiClient.getRunEvents("run-too-142-active", {
+      category: "tool",
+      limit: 20,
+    });
+
+    expect(result.source).toBe("mock");
+    expect(result.data.rows).toHaveLength(1);
+    expect(result.data.rows[0].summary).toContain("linear_graphql");
   });
 
   it("throws when mock-only mode has no fallback", async () => {

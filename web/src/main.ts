@@ -2,6 +2,7 @@ import {
   Alert,
   Badge,
   Button,
+  Collapse,
   ConfigProvider,
   Descriptions,
   Empty,
@@ -11,6 +12,7 @@ import {
   Statistic,
   Table,
   Tag,
+  Timeline,
 } from "ant-design-vue";
 import "ant-design-vue/dist/reset.css";
 import { createApp } from "vue";
@@ -24,6 +26,7 @@ const app = createApp(App);
   Alert,
   Badge,
   Button,
+  Collapse,
   ConfigProvider,
   Descriptions,
   Empty,
@@ -33,6 +36,7 @@ const app = createApp(App);
   Statistic,
   Table,
   Tag,
+  Timeline,
 ].forEach((component) => {
   app.use(component);
 });
