@@ -96,6 +96,10 @@ const antStubs = {
     props: ["value"],
     template: `<input :value="value" @input="$emit('update:value', $event.target.value)" @keydown.enter="$emit('search')" />`,
   },
+  "a-progress": {
+    props: ["percent"],
+    template: `<div data-testid="progress">{{ percent }}</div>`,
+  },
   "a-select": ASelectStub,
   "a-spin": {
     template: `<div><slot /></div>`,

@@ -11,27 +11,36 @@
 
     <div class="status-card">
       <a-statistic title="Running" :value="count('running')" :loading="loading" />
+      <div class="metric-note">active sessions</div>
     </div>
     <div class="status-card">
       <a-statistic title="Retrying" :value="count('retrying')" :loading="loading" />
+      <div class="metric-note">backoff queue</div>
     </div>
     <div class="status-card">
       <a-statistic title="Failed" :value="count('failed')" :loading="loading" />
+      <div class="metric-note">needs review</div>
     </div>
     <div class="status-card">
       <a-statistic title="Tokens" :value="totalTokens" :loading="loading" />
+      <div class="metric-note">all visible runs</div>
     </div>
     <div class="status-card">
       <a-statistic title="Runtime" :value="runtimeText" :loading="loading" />
+      <div class="metric-note">aggregate</div>
+    </div>
+    <div class="status-card rate-limit-card">
+      <div class="metric-label">Rate Limit</div>
+      <div class="rate-limit-value">{{ rateLimitText }}</div>
+      <a-progress
+        :percent="rateLimitPercent"
+        :show-info="false"
+        :stroke-color="rateLimitColor"
+        size="small"
+      />
+      <div class="metric-note">{{ rateLimitNote }}</div>
     </div>
 
-    <a-alert
-      v-if="fallbackReason"
-      class="mock-alert"
-      type="warning"
-      show-icon
-      :message="`Mock data active: ${fallbackReason}`"
-    />
   </section>
 </template>
 
@@ -70,6 +79,40 @@ const readyText = computed(() => {
 
 const totalTokens = computed(() => formatCount(props.state?.tokens.total_tokens));
 const runtimeText = computed(() => formatRuntime(props.state?.runtime.total_seconds));
+const rateLimit = computed(() => {
+  const latest = props.state?.rate_limit.latest;
+  if (!latest || typeof latest !== "object") {
+    return {};
+  }
+  return latest as { primary_remaining?: number; reset_seconds?: number };
+});
+const rateLimitText = computed(() => {
+  if (rateLimit.value.primary_remaining === undefined) {
+    return "-";
+  }
+  return formatCount(rateLimit.value.primary_remaining);
+});
+const rateLimitPercent = computed(() => {
+  if (rateLimit.value.primary_remaining === undefined) {
+    return 0;
+  }
+  return Math.min(100, Math.round((rateLimit.value.primary_remaining / 5000) * 100));
+});
+const rateLimitColor = computed(() => {
+  if (rateLimitPercent.value < 20) {
+    return "#c2413b";
+  }
+  if (rateLimitPercent.value < 50) {
+    return "#b7791f";
+  }
+  return "#0f8a5f";
+});
+const rateLimitNote = computed(() => {
+  if (rateLimit.value.reset_seconds === undefined) {
+    return "no limit sample";
+  }
+  return `reset in ${formatRuntime(rateLimit.value.reset_seconds)}`;
+});
 
 function count(status: string): number {
   return props.state?.counts[status] ?? 0;

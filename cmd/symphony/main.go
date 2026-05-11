@@ -27,6 +27,8 @@ import (
 	"github.com/SisyphusSQ/symphony-go/internal/workspace"
 )
 
+const allowUnsafeCodexEnv = "SYMPHONY_ALLOW_UNSAFE_CODEX"
+
 func main() {
 	if err := newRootCommand().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -80,11 +82,16 @@ func newRunCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("startup failed: %w", err)
 			}
-			cfg, err := config.FromWorkflow(def)
+			allowUnsafeCodex, err := resolveAllowUnsafeCodex(opts.allowUnsafeCodex, os.Getenv(allowUnsafeCodexEnv))
+			if err != nil {
+				return err
+			}
+			configOpts := configOptionsForRun(allowUnsafeCodex)
+			cfg, err := config.FromWorkflow(def, configOpts...)
 			if err != nil {
 				return fmt.Errorf("startup failed: %w", err)
 			}
-			runtime, err := newRuntimeForRun(path, cfg)
+			runtime, err := newRuntimeForRun(path, cfg, configOpts...)
 			if err != nil {
 				return fmt.Errorf("startup failed: %w", err)
 			}
@@ -106,7 +113,13 @@ func newRunCommand() *cobra.Command {
 			if opts.instance != "" {
 				details += fmt.Sprintf("; instance %q", opts.instance)
 			}
+			if allowUnsafeCodex {
+				details += "; unsafe codex opt-in enabled"
+			}
 			cmd.Printf("workflow %q passed startup validation%s\n", path, details)
+			if allowUnsafeCodex {
+				cmd.Println("warning: unsafe codex opt-in enabled; high-trust Codex approval and sandbox settings are allowed for this local run")
+			}
 			var shutdown func(context.Context) error
 			if serverOpts.Enabled {
 				listenURL, closeServer, err := startOperatorHTTPServer(cmd.Context(), runtime, serverOpts)
@@ -132,15 +145,16 @@ func newRunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.workflowPath, "workflow", "", "workflow file path (defaults to ./WORKFLOW.md)")
 	cmd.Flags().IntVar(&opts.port, "port", 0, "override server.port from the workflow file")
 	cmd.Flags().StringVar(&opts.instance, "instance", "", "operator-defined instance name")
+	cmd.Flags().BoolVar(&opts.allowUnsafeCodex, "allow-unsafe-codex", false, "allow high-trust Codex settings such as approval_policy=never and danger-full-access for trusted local runs")
 
 	return cmd
 }
 
-type runRuntimeFactory func(workflowPath string, cfg config.Config) (*orchestrator.Runtime, error)
+type runRuntimeFactory func(workflowPath string, cfg config.Config, opts ...config.Option) (*orchestrator.Runtime, error)
 
 var newRuntimeForRun runRuntimeFactory = newProductionRuntime
 
-func newProductionRuntime(workflowPath string, cfg config.Config) (*orchestrator.Runtime, error) {
+func newProductionRuntime(workflowPath string, cfg config.Config, opts ...config.Option) (*orchestrator.Runtime, error) {
 	trackerClient, err := linear.NewFromTrackerConfig(cfg.Tracker)
 	if err != nil {
 		return nil, fmt.Errorf("build linear tracker: %w", err)
@@ -154,7 +168,7 @@ func newProductionRuntime(workflowPath string, cfg config.Config) (*orchestrator
 		Workspace: workspaceManager,
 		Hooks:     hooks.NewRunner(cfg.Hooks),
 		Runner:    codex.NewRunner(cfg.Codex),
-	})
+	}, opts...)
 }
 
 func newValidateCommand() *cobra.Command {
@@ -246,9 +260,10 @@ func resolveWorkflowArg(flagValue string, args []string) (string, error) {
 }
 
 type runOptions struct {
-	workflowPath string
-	port         int
-	instance     string
+	workflowPath     string
+	port             int
+	instance         string
+	allowUnsafeCodex bool
 }
 
 type serverOptions struct {
@@ -367,6 +382,28 @@ func validatePort(port int) error {
 		return fmt.Errorf("server.port must be between 0 and %d", config.MaxServerPort)
 	}
 	return nil
+}
+
+func configOptionsForRun(allowUnsafeCodex bool) []config.Option {
+	if !allowUnsafeCodex {
+		return nil
+	}
+	return []config.Option{config.WithAllowUnsafeCodex()}
+}
+
+func resolveAllowUnsafeCodex(flagValue bool, envValue string) (bool, error) {
+	if flagValue {
+		return true, nil
+	}
+	envValue = strings.TrimSpace(envValue)
+	if envValue == "" {
+		return false, nil
+	}
+	allowed, err := strconv.ParseBool(envValue)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean when set: %w", allowUnsafeCodexEnv, err)
+	}
+	return allowed, nil
 }
 
 func workflowServerPortConfigured(def workflow.Definition) bool {

@@ -5,6 +5,7 @@ import {
   defaultRunEventFilters,
   defaultRunFilters,
   errorMessage,
+  isTimelineCategory,
   type OperatorApiClient,
   type OperatorDataSource,
   type RunDetail,
@@ -16,14 +17,13 @@ import {
   type RunTimelineEvent,
   type StateResponse,
   type TimelineCategoryFilter,
-  isTimelineCategory,
 } from "../api/operator";
-import { mockOperatorApiClient } from "../fixtures/operator";
 
 export interface DashboardLoadState {
   state: StateResponse | null;
   runs: RunRow[];
   selectedDetail: RunDetail | null;
+  selectedEvents: RunTimelineEvent[];
   timelineEvents: RunTimelineEvent[];
   selectedEvent: RunTimelineEvent | null;
   loading: boolean;
@@ -39,9 +39,7 @@ export interface DashboardLoadState {
 }
 
 export function createDefaultOperatorClient(): OperatorApiClient {
-  return createFetchOperatorApiClient({
-    fallback: mockOperatorApiClient,
-  });
+  return createFetchOperatorApiClient();
 }
 
 export function useDashboardData(client: OperatorApiClient = createDefaultOperatorClient()) {
@@ -62,9 +60,11 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
   const filters = ref<RunFilters>({ ...defaultRunFilters });
   const eventFilters = ref<RunEventFilters>(initialEventFilters());
   const requestedEventID = ref(initialSelection().eventID);
+  let detailRequestID = 0;
 
   const runs = computed(() => runsPage.value?.rows ?? []);
   const timelineEvents = computed(() => eventsPage.value?.rows ?? []);
+  const selectedEvents = timelineEvents;
   const selectedEvent = computed(() => {
     if (!selectedEventID.value) {
       return null;
@@ -120,6 +120,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
 
   async function selectRun(runID: string) {
     const cleanRunID = runID.trim();
+    const requestID = ++detailRequestID;
     selectedRunID.value = cleanRunID;
     selectedDetail.value = null;
     eventsPage.value = null;
@@ -127,24 +128,48 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     detailError.value = "";
     eventsError.value = "";
     if (!cleanRunID) {
+      detailLoading.value = false;
+      eventsLoading.value = false;
       syncLocation();
       return;
     }
     detailLoading.value = true;
+    eventsLoading.value = true;
     try {
-      const result = await client.getRunDetail(cleanRunID);
-      selectedDetail.value = result.data;
-      if (result.source === "mock") {
-        source.value = "mock";
-        fallbackReason.value = result.fallbackReason || fallbackReason.value;
+      const [detailResult, eventsResult] = await Promise.allSettled([
+        client.getRunDetail(cleanRunID),
+        client.getRunEvents(cleanRunID, eventFilters.value),
+      ]);
+      if (requestID !== detailRequestID) {
+        return;
       }
-      await loadRunEvents(cleanRunID);
-      syncLocation();
-    } catch (detailLoadError) {
-      detailError.value = errorMessage(detailLoadError);
+
+      if (detailResult.status === "fulfilled") {
+        selectedDetail.value = detailResult.value.data;
+        if (detailResult.value.source === "mock") {
+          source.value = "mock";
+          fallbackReason.value = detailResult.value.fallbackReason || fallbackReason.value;
+        }
+      } else {
+        detailError.value = errorMessage(detailResult.reason);
+      }
+
+      if (eventsResult.status === "fulfilled") {
+        eventsPage.value = eventsResult.value.data;
+        if (eventsResult.value.source === "mock") {
+          source.value = "mock";
+          fallbackReason.value = eventsResult.value.fallbackReason || fallbackReason.value;
+        }
+        selectRequestedOrFirstEvent();
+      } else {
+        eventsError.value = errorMessage(eventsResult.reason);
+      }
       syncLocation();
     } finally {
-      detailLoading.value = false;
+      if (requestID === detailRequestID) {
+        detailLoading.value = false;
+        eventsLoading.value = false;
+      }
     }
   }
 
@@ -164,15 +189,15 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     eventsLoading.value = true;
     try {
       const result = await client.getRunEvents(cleanRunID, eventFilters.value);
+      if (cleanRunID !== selectedRunID.value) {
+        return;
+      }
       eventsPage.value = result.data;
       if (result.source === "mock") {
         source.value = "mock";
         fallbackReason.value = result.fallbackReason || fallbackReason.value;
       }
-      const requested = requestedEventID.value;
-      const visibleRequested = timelineEvents.value.find((event) => event.id === requested);
-      selectedEventID.value = visibleRequested?.id || timelineEvents.value[0]?.id || "";
-      requestedEventID.value = "";
+      selectRequestedOrFirstEvent();
       syncLocation();
     } catch (eventLoadError) {
       eventsError.value = errorMessage(eventLoadError);
@@ -199,6 +224,13 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
 
   function updateFilters(nextFilters: RunFilters) {
     return loadDashboard(nextFilters);
+  }
+
+  function selectRequestedOrFirstEvent() {
+    const requested = requestedEventID.value;
+    const visibleRequested = timelineEvents.value.find((event) => event.id === requested);
+    selectedEventID.value = visibleRequested?.id || timelineEvents.value[0]?.id || "";
+    requestedEventID.value = "";
   }
 
   function syncLocation() {
@@ -230,6 +262,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     state,
     runs,
     selectedDetail,
+    selectedEvents,
     selectedRunID,
     timelineEvents,
     selectedEvent,

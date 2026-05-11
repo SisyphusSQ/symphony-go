@@ -25,7 +25,10 @@
           <span class="issue-cell">{{ record.issue_identifier || record.issue_id }}</span>
         </template>
         <template v-else-if="column.key === 'status'">
-          <a-tag :color="tagColor(record.status)">{{ record.status }}</a-tag>
+          <span class="status-cell">
+            <a-badge :status="statusTone(record.status)" />
+            <a-tag :color="tagColor(record.status)">{{ record.status }}</a-tag>
+          </span>
         </template>
         <template v-else-if="column.key === 'attempt'">
           #{{ record.attempt }}
@@ -50,7 +53,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
-import { formatDateTime, formatRuntime, formatTokens, tagColor } from "../api/format";
+import { formatDateTime, formatRuntime, formatTokens, statusTone, tagColor } from "../api/format";
 import type { RunRow } from "../api/operator";
 
 const props = defineProps<{
@@ -85,6 +88,14 @@ function rowKey(record: RunRow): string {
 function customRow(record: RunRow) {
   return {
     onClick: () => emit("select", record.run_id),
+    onKeydown: (event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        emit("select", record.run_id);
+      }
+    },
+    role: "button",
+    tabindex: 0,
   };
 }
 

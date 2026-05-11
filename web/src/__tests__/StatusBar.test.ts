@@ -13,6 +13,10 @@ const stubs = {
     props: ["text"],
     template: `<span>{{ text }}</span>`,
   },
+  "a-progress": {
+    props: ["percent"],
+    template: `<div data-testid="progress">{{ percent }}</div>`,
+  },
   "a-statistic": {
     props: ["title", "value"],
     template: `<div><span>{{ title }}</span><strong>{{ value }}</strong></div>`,
@@ -23,7 +27,7 @@ const stubs = {
 };
 
 describe("StatusBar", () => {
-  it("renders state counts and mock source warnings", () => {
+  it("renders state counts and source label", () => {
     const wrapper = mount(StatusBar, {
       props: {
         state: mockState,
@@ -38,6 +42,5 @@ describe("StatusBar", () => {
     expect(wrapper.text()).toContain("Running");
     expect(wrapper.text()).toContain("Retrying");
     expect(wrapper.text()).toContain("Mock");
-    expect(wrapper.text()).toContain("connect ECONNREFUSED");
   });
 });

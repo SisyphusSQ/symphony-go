@@ -1,44 +1,12 @@
-import {
-  Alert,
-  Badge,
-  Button,
-  Collapse,
-  ConfigProvider,
-  Descriptions,
-  Empty,
-  Input,
-  Select,
-  Spin,
-  Statistic,
-  Table,
-  Tag,
-  Timeline,
-} from "ant-design-vue";
 import "ant-design-vue/dist/reset.css";
 import { createApp } from "vue";
 
+import { registerAntd } from "./antd";
 import App from "./App.vue";
 import "./styles.css";
 
 const app = createApp(App);
 
-[
-  Alert,
-  Badge,
-  Button,
-  Collapse,
-  ConfigProvider,
-  Descriptions,
-  Empty,
-  Input,
-  Select,
-  Spin,
-  Statistic,
-  Table,
-  Tag,
-  Timeline,
-].forEach((component) => {
-  app.use(component);
-});
+registerAntd(app);
 
 app.mount("#app");

@@ -7,7 +7,8 @@ Validate the production baseline safety controls shipped by `TOO-134`.
 This runbook covers:
 
 - safe Codex sandbox and approval defaults
-- config validation for unsafe sandbox, approval, and environment inheritance
+- config validation for unsafe sandbox, approval, and environment inheritance,
+  plus explicit trusted-local opt-in
 - secret redaction for logs, hook output, errors, workflow/config display, and audit payloads
 - durable audit event persistence for important runtime, hook, agent, tool, and guardrail events
 - per-issue max-turn, max-duration, max-token, and optional estimated-cost guardrails
@@ -51,7 +52,11 @@ make harness-review-gate PLAN=.agent/plans/TOO-134.md
 ## Expected Results
 
 - Config defaults resolve to workspace-write sandbox posture and non-`never` approval.
-- Config validation rejects known unsafe sandbox, approval, and all-shell environment inheritance values.
+- Config validation rejects known unsafe sandbox, approval, and all-shell
+  environment inheritance values by default.
+- `symphony run --allow-unsafe-codex ...` and
+  `SYMPHONY_ALLOW_UNSAFE_CODEX=true symphony run ...` allow those high-trust
+  values only for an explicit trusted local run and print an operator warning.
 - Redaction tests prove literal secrets, secret-like keys, token patterns, and secret-bearing paths are replaced before output.
 - Hook, agent, tool, and guardrail audit payloads are persisted only after redaction.
 - Guardrail exceeded results stop the current run without scheduling a retry.

@@ -277,6 +277,36 @@ func TestFromWorkflowKeepsSafeDefaultsForBlankCodexSafetyFields(t *testing.T) {
 	}
 }
 
+func TestFromWorkflowAllowsUnsafeCodexWithExplicitOption(t *testing.T) {
+	raw := minimalRawConfig("literal-token", "symphony-go")
+	raw["codex"] = map[string]any{
+		"command":             "codex app-server",
+		"approval_policy":     "never",
+		"thread_sandbox":      "danger-full-access",
+		"turn_sandbox_policy": map[string]any{"type": "dangerFullAccess", "shell_environment_policy": map[string]any{"inherit": "all"}},
+	}
+
+	cfg := mustConfig(
+		t,
+		workflow.Definition{
+			Path:           filepath.Join(t.TempDir(), "WORKFLOW.md"),
+			Config:         raw,
+			PromptTemplate: "Prompt",
+		},
+		WithAllowUnsafeCodex(),
+	)
+
+	if cfg.Codex.ApprovalPolicy != "never" {
+		t.Fatalf("ApprovalPolicy = %q, want never", cfg.Codex.ApprovalPolicy)
+	}
+	if cfg.Codex.ThreadSandbox != "danger-full-access" {
+		t.Fatalf("ThreadSandbox = %q, want danger-full-access", cfg.Codex.ThreadSandbox)
+	}
+	if got := cfg.Codex.TurnSandboxPolicy["type"]; got != "dangerFullAccess" {
+		t.Fatalf("TurnSandboxPolicy[type] = %v, want dangerFullAccess", got)
+	}
+}
+
 func TestFromWorkflowNormalizesRelativeAndHomeWorkspaceRoots(t *testing.T) {
 	tempDir := t.TempDir()
 	workflowDir := filepath.Join(tempDir, "repo", "nested")

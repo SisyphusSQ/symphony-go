@@ -192,6 +192,14 @@ func WithTempDir(tempDir string) Option {
 	}
 }
 
+// WithAllowUnsafeCodex permits explicit local runs to use high-trust Codex
+// settings such as approval_policy=never and danger-full-access sandboxes.
+func WithAllowUnsafeCodex() Option {
+	return func(opts *options) {
+		opts.allowUnsafeCodex = true
+	}
+}
+
 // Load reads a workflow file and returns its typed runtime config.
 func Load(path string, opts ...Option) (Config, error) {
 	def, err := workflow.Load(path)
@@ -394,9 +402,10 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 }
 
 type options struct {
-	env     func(string) (string, bool)
-	homeDir string
-	tempDir string
+	env              func(string) (string, bool)
+	homeDir          string
+	tempDir          string
+	allowUnsafeCodex bool
 }
 
 type resolver struct {
@@ -780,17 +789,19 @@ func (r *resolver) validateDispatchPreflight(cfg Config) {
 	if cfg.Codex.Command == "" {
 		r.add("codex.command", errors.New("is required"))
 	}
-	if normalizedPolicy(cfg.Codex.ApprovalPolicy) == "never" {
-		r.add("codex.approval_policy", errors.New("must not be never for production baseline"))
-	}
-	if normalizedPolicy(cfg.Codex.ThreadSandbox) == "dangerfullaccess" {
-		r.add("codex.thread_sandbox", errors.New("must not be danger-full-access for production baseline"))
-	}
-	if normalizedPolicy(stringFromMap(cfg.Codex.TurnSandboxPolicy, "type")) == "dangerfullaccess" {
-		r.add("codex.turn_sandbox_policy.type", errors.New("must not be dangerFullAccess for production baseline"))
-	}
-	if inheritsAllShellEnvironment(cfg.Codex.TurnSandboxPolicy) {
-		r.add("codex.turn_sandbox_policy.shell_environment_policy.inherit", errors.New("must not inherit all environment variables"))
+	if !r.opts.allowUnsafeCodex {
+		if normalizedPolicy(cfg.Codex.ApprovalPolicy) == "never" {
+			r.add("codex.approval_policy", errors.New("must not be never for production baseline"))
+		}
+		if normalizedPolicy(cfg.Codex.ThreadSandbox) == "dangerfullaccess" {
+			r.add("codex.thread_sandbox", errors.New("must not be danger-full-access for production baseline"))
+		}
+		if normalizedPolicy(stringFromMap(cfg.Codex.TurnSandboxPolicy, "type")) == "dangerfullaccess" {
+			r.add("codex.turn_sandbox_policy.type", errors.New("must not be dangerFullAccess for production baseline"))
+		}
+		if inheritsAllShellEnvironment(cfg.Codex.TurnSandboxPolicy) {
+			r.add("codex.turn_sandbox_policy.shell_environment_policy.inherit", errors.New("must not inherit all environment variables"))
+		}
 	}
 	if cfg.Agent.MaxCostUSD > 0 && cfg.Agent.CostPerMillionTokensUSD <= 0 {
 		r.add("agent.cost_per_million_tokens_usd", errors.New("must be positive when agent.max_cost_usd is set"))

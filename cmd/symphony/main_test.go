@@ -243,8 +243,8 @@ func TestValidateRejectsDirectoryWorkflowPath(t *testing.T) {
 func TestRunPerformsStartupValidationWithoutStartingRuntime(t *testing.T) {
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	writeWorkflow(t, workflowPath)
-	withRunRuntimeFactory(t, func(path string, _ config.Config) (*orchestrator.Runtime, error) {
-		return orchestrator.NewRuntime(path)
+	withRunRuntimeFactory(t, func(path string, _ config.Config, opts ...config.Option) (*orchestrator.Runtime, error) {
+		return orchestrator.NewRuntime(path, opts...)
 	})
 
 	output, err := executeCommand(t, "run", "--port", "0", "--instance", "dev", workflowPath)
@@ -260,6 +260,82 @@ func TestRunPerformsStartupValidationWithoutStartingRuntime(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("run output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestRunRejectsUnsafeCodexWithoutExplicitOptIn(t *testing.T) {
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	writeUnsafeCodexWorkflow(t, workflowPath)
+	withRunRuntimeFactory(t, func(string, config.Config, ...config.Option) (*orchestrator.Runtime, error) {
+		t.Fatal("runtime factory should not be called when config validation fails")
+		return nil, nil
+	})
+
+	_, err := executeCommand(t, "run", workflowPath)
+	if err == nil {
+		t.Fatal("expected unsafe codex workflow to fail without explicit opt-in")
+	}
+	for _, want := range []string{
+		"codex.approval_policy",
+		"codex.thread_sandbox",
+		"codex.turn_sandbox_policy.type",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error containing %q, got %q", want, err.Error())
+		}
+	}
+}
+
+func TestRunAllowsUnsafeCodexWithExplicitFlag(t *testing.T) {
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	writeUnsafeCodexWorkflow(t, workflowPath)
+	withRunRuntimeFactory(t, func(path string, _ config.Config, opts ...config.Option) (*orchestrator.Runtime, error) {
+		return orchestrator.NewRuntime(path, opts...)
+	})
+
+	output, err := executeCommand(t, "run", "--allow-unsafe-codex", "--port", "0", workflowPath)
+	if err != nil {
+		t.Fatalf("expected unsafe codex workflow to pass with explicit flag: %v", err)
+	}
+	for _, want := range []string{
+		"unsafe codex opt-in enabled",
+		"warning: unsafe codex opt-in enabled",
+		"orchestrator runtime loaded; dispatch dependencies are not configured in this CLI slice",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("run output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRunAllowsUnsafeCodexWithExplicitEnv(t *testing.T) {
+	t.Setenv(allowUnsafeCodexEnv, "true")
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	writeUnsafeCodexWorkflow(t, workflowPath)
+	withRunRuntimeFactory(t, func(path string, _ config.Config, opts ...config.Option) (*orchestrator.Runtime, error) {
+		return orchestrator.NewRuntime(path, opts...)
+	})
+
+	output, err := executeCommand(t, "run", "--port", "0", workflowPath)
+	if err != nil {
+		t.Fatalf("expected unsafe codex workflow to pass with explicit env: %v", err)
+	}
+	if !strings.Contains(output, "unsafe codex opt-in enabled") {
+		t.Fatalf("run output missing unsafe opt-in:\n%s", output)
+	}
+}
+
+func TestRunRejectsInvalidUnsafeCodexEnv(t *testing.T) {
+	t.Setenv(allowUnsafeCodexEnv, "definitely")
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	writeWorkflow(t, workflowPath)
+
+	_, err := executeCommand(t, "run", workflowPath)
+	if err == nil {
+		t.Fatal("expected invalid unsafe codex env to fail")
+	}
+	if !strings.Contains(err.Error(), allowUnsafeCodexEnv) {
+		t.Fatalf("expected error to mention %s, got %v", allowUnsafeCodexEnv, err)
 	}
 }
 
@@ -430,5 +506,29 @@ func writeWorkflow(t *testing.T, path string) {
 	}, "\n")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write workflow fixture: %v", err)
+	}
+}
+
+func writeUnsafeCodexWorkflow(t *testing.T, path string) {
+	t.Helper()
+
+	content := strings.Join([]string{
+		"---",
+		"tracker:",
+		"  kind: linear",
+		"  api_key: literal-token",
+		"  project_slug: symphony-go",
+		"codex:",
+		"  command: codex app-server",
+		"  approval_policy: never",
+		"  thread_sandbox: danger-full-access",
+		"  turn_sandbox_policy:",
+		"    type: dangerFullAccess",
+		"---",
+		"Prompt",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write unsafe workflow fixture: %v", err)
 	}
 }

@@ -55,8 +55,10 @@ refreshes on `/runs/<run_id>` return the dashboard when the request accepts
 - `VITE_OPERATOR_API_BASE`: optional absolute API base URL. When unset, the app
   uses relative `/api/v1` paths so the Vite dev proxy can handle requests.
 - `VITE_OPERATOR_PROXY_TARGET`: optional Vite proxy target for `/api/v1`.
-- `VITE_OPERATOR_MOCK`: `auto`, `always`, or `never`. The default `auto` uses
-  mock fixtures when the local operator API is unavailable.
+
+The production app does not fall back to mock data. If the local operator API is
+unavailable, the UI shows the API error or an empty state. Mock fixtures are
+limited to Storybook stories and component tests.
 
 ## Run Detail
 

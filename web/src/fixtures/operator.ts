@@ -1,6 +1,7 @@
 import {
   createMockOperatorApiClient,
   type RunDetail,
+  type RunEventPage,
   type RunTimelineEvent,
   type RunRow,
   type StateResponse,
@@ -381,6 +382,16 @@ export const mockRunEvents: Record<string, RunTimelineEvent[]> = {
   ],
   "run-too-141-completed": [],
 };
+
+export const mockTimelinePages: Record<string, RunEventPage> = Object.fromEntries(
+  Object.entries(mockRunEvents).map(([runID, rows]) => [
+    runID,
+    {
+      rows,
+      limit: 100,
+    },
+  ]),
+);
 
 export const mockOperatorApiClient = createMockOperatorApiClient(
   mockState,

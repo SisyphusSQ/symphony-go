@@ -176,10 +176,8 @@ export interface OperatorApiClient {
   getState(): Promise<OperatorResult<StateResponse>>;
   getRuns(filters: RunFilters): Promise<OperatorResult<RunPage>>;
   getRunDetail(runID: string): Promise<OperatorResult<RunDetail>>;
-  getRunEvents(runID: string, filters: RunEventFilters): Promise<OperatorResult<RunEventPage>>;
+  getRunEvents(runID: string, filters?: RunEventFilters): Promise<OperatorResult<RunEventPage>>;
 }
-
-export type FallbackMode = "auto" | "always" | "never";
 
 export class OperatorApiError extends Error {
   readonly code: string;
@@ -202,8 +200,6 @@ interface ErrorEnvelope {
 
 export interface FetchOperatorApiClientOptions {
   baseURL?: string;
-  fallback?: OperatorApiClient;
-  fallbackMode?: FallbackMode;
   fetcher?: typeof fetch;
 }
 
@@ -245,55 +241,35 @@ export function createFetchOperatorApiClient(
   options: FetchOperatorApiClientOptions = {},
 ): OperatorApiClient {
   const baseURL = normalizeBaseURL(options.baseURL ?? import.meta.env.VITE_OPERATOR_API_BASE ?? "");
-  const fallback = options.fallback;
-  const fallbackMode = options.fallbackMode ?? import.meta.env.VITE_OPERATOR_MOCK ?? "auto";
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
 
-  const request = async <T>(path: string, fallbackCall: () => Promise<OperatorResult<T>>) => {
-    if (fallbackMode === "always") {
-      return fallbackCall();
-    }
-    try {
-      return {
-        data: await fetchJSON<T>(joinURL(baseURL, path), fetcher),
-        source: "api" as const,
-      };
-    } catch (error) {
-      if (fallbackMode === "auto" && fallback) {
-        const result = await fallbackCall();
-        return {
-          ...result,
-          fallbackReason: errorMessage(error),
-        };
-      }
-      throw error;
-    }
+  const request = async <T>(path: string): Promise<OperatorResult<T>> => {
+    return {
+      data: await fetchJSON<T>(joinURL(baseURL, path), fetcher),
+      source: "api",
+    };
   };
 
   return {
     getState() {
-      return request("/api/v1/state", () => requiredFallback(fallback).getState());
+      return request("/api/v1/state");
     },
     getRuns(filters) {
-      return request(buildRunsPath(filters), () => requiredFallback(fallback).getRuns(filters));
+      return request(buildRunsPath(filters));
     },
     getRunDetail(runID) {
       const cleanRunID = runID.trim();
       if (!cleanRunID) {
         throw new OperatorApiError("run id is required", { code: "invalid_run_id" });
       }
-      return request(`/api/v1/runs/${encodeURIComponent(cleanRunID)}`, () =>
-        requiredFallback(fallback).getRunDetail(cleanRunID),
-      );
+      return request(`/api/v1/runs/${encodeURIComponent(cleanRunID)}`);
     },
-    getRunEvents(runID, filters) {
+    getRunEvents(runID, filters = defaultRunEventFilters) {
       const cleanRunID = runID.trim();
       if (!cleanRunID) {
         throw new OperatorApiError("run id is required", { code: "invalid_run_id" });
       }
-      return request(buildRunEventsPath(cleanRunID, filters), () =>
-        requiredFallback(fallback).getRunEvents(cleanRunID, filters),
-      );
+      return request(buildRunEventsPath(cleanRunID, filters));
     },
   };
 }
@@ -328,7 +304,7 @@ export function createMockOperatorApiClient(
       }
       return { data: clone(detail), source: "mock" };
     },
-    async getRunEvents(runID, filters) {
+    async getRunEvents(runID, filters = defaultRunEventFilters) {
       if (!details[runID]) {
         throw new OperatorApiError("mock run not found", {
           code: "run_not_found",
@@ -361,7 +337,10 @@ export function buildRunsPath(filters: RunFilters): string {
   return `/api/v1/runs?${values.toString()}`;
 }
 
-export function buildRunEventsPath(runID: string, filters: RunEventFilters): string {
+export function buildRunEventsPath(
+  runID: string,
+  filters: RunEventFilters = defaultRunEventFilters,
+): string {
   const cleanRunID = runID.trim();
   if (!cleanRunID) {
     throw new OperatorApiError("run id is required", { code: "invalid_run_id" });
@@ -408,13 +387,6 @@ function decodeHTTPError(status: number, raw: string): OperatorApiError {
       status,
     });
   }
-}
-
-function requiredFallback(fallback: OperatorApiClient | undefined): OperatorApiClient {
-  if (!fallback) {
-    throw new OperatorApiError("mock fallback is not configured", { code: "mock_unavailable" });
-  }
-  return fallback;
 }
 
 function applyRunFilters(rows: RunRow[], filters: RunFilters): RunRow[] {

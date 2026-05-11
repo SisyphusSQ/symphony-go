@@ -50,3 +50,7 @@ coverage.html
 web/node_modules/
 web/dist/
 web/coverage/
+web/storybook-static/
+
+# Superpowers visual brainstorming local state
+.superpowers/
