@@ -18,7 +18,7 @@ candidate revision and the result is written back with sanitized evidence.
 - Recorded date: 2026-05-12
 - Recorded directory: `docs/test/release-gate/`
 - Run type: release gate execution
-- Current conclusion: `NO-GO`
+- Current conclusion: `GO` for local release candidate `bf0bcbe`
 - Automated entry points:
   - `make verify`
   - `make test-fake-e2e`
@@ -33,40 +33,38 @@ candidate revision and the result is written back with sanitized evidence.
   - `docs/test/operator-ui/RUNBOOK.md`
   - `docs/test/production-safety/RUNBOOK.md`
 - Result summary: deterministic repository gates, focused production gates,
-  operator UI gates, explicit real preflight, endpoint smoke, restart smoke,
-  rollback stop, and local artifact build checks ran on 2026-05-11. The final
-  release decision is `NO-GO` because the live Go self-dogfood phase
-  redispatched the same active dogfood issue after the first Codex turn
-  completed. The operator was paused, the second run was canceled, the Go
-  runtime was stopped, and the dogfood issue was moved to `Human Review` to
-  prevent further automatic dispatch. A later 2026-05-12 live attempt on the
-  frozen token-guardrail candidate remained `NO-GO`: after operator cancel, the
-  same still-active issue was redispatched, and Codex app-server progress was
-  not visible in durable state while the turn was still running.
+  operator UI gates, explicit real preflight, endpoint smoke, full Go binary
+  self-dogfood, live Codex event persistence, command approval handling,
+  local-terminal suppression, active-candidate cleanup, and local artifact
+  build checks passed on 2026-05-12 for local candidate `bf0bcbe`. Historical
+  failed dogfood issues `TOO-146`, `TOO-147`, and `TOO-148` remain recorded as
+  `NO-GO` evidence and were not reused. No push, tag, archive, release
+  publication, or PR action was performed.
 
 ```text
-release_candidate: 81af829 plus uncommitted release-gate/workflow/test evidence overlay
-gate_started_at: 2026-05-11 18:10 CST
-gate_finished_at: 2026-05-11 18:36 CST
-decision: NO-GO
-dogfood_issue: TOO-145
-operator_endpoint: loopback, port redacted
+release_candidate: bf0bcbe
+gate_started_at: 2026-05-12 14:23 CST
+gate_finished_at: 2026-05-12 14:36 CST
+decision: GO
+dogfood_issue: TOO-149
+operator_endpoint: loopback, port 60039
 workspace_root: dedicated path confirmed, full path not recorded
 state_db: dedicated sqlite path confirmed, full path not recorded
-external_runner: no matching external runner process observed; Go runtime stopped after rollback
+external_runner: no matching external runner process observed; Go runtime stopped after closeout
 changelog_action: updated Unreleased
 changelog_version: Unreleased
 verification_summary:
   - deterministic gates: pass
   - focused production gates: pass
   - operator UI gates: pass
-  - explicit real preflight: pass, one candidate TOO-145
-  - full Go dogfood: fail, same issue redispatched after first Codex turn
-  - restart rollback: pass for stop/no-redispatch after Human Review; interrupted retry proof remains blocked by NO-GO
-  - release artifact readiness: partial pass for classify/build/help; archive/tag publication not run
+  - explicit real preflight: pass, one candidate TOO-149
+  - full Go dogfood: pass, one run completed
+  - live Codex visibility: pass, token/tool/approval/turn events persisted while running
+  - local terminal suppression: pass, completed active issue skipped with suppressed_after_local_terminal
+  - active-candidate cleanup: pass, suppression cleared after TOO-149 moved to Human Review
+  - release artifact readiness: pass for classify/build/help; archive/tag publication not run by design
 residual_risks:
-  - release candidate freeze failed because evidence required an uncommitted workflow/test/runbook overlay
-  - live dogfood must prevent same-issue redispatch after a completed turn before final GO
+  - tag/archive/publication remains a separate explicit release action
 ```
 
 ### 2026-05-12 Token Guardrail Alignment Verification
@@ -125,18 +123,51 @@ fix_required:
   - persist selected Codex app-server events as they arrive
 ```
 
+### 2026-05-12 TOO-149 Live Dogfood GO
+
+After freezing `bf0bcbe` and creating a fresh active dogfood issue, the full
+live Go binary dogfood path completed. This run included the earlier fixes for
+local-terminal redispatch suppression, live app-server event persistence, Codex
+0.130 `linear_graphql` v2 tool compatibility, and command/file-change approval
+callbacks. Historical issues `TOO-146`, `TOO-147`, and `TOO-148` stayed in
+`Human Review` as `NO-GO` evidence and were not reused.
+
+```text
+release_candidate: bf0bcbe
+decision: GO
+dogfood_issue: TOO-149
+operator_endpoint: loopback, port 60039
+run_id: run_7a0be21942838815e721ea4ffbbf3a1a
+session_id: 019e1ada-75a5-7990-82da-0519cefb5b70-019e1ada-82f1-7fa1-8e5f-bc1ef3fcb0a1
+verification_summary:
+  - deterministic gates: pass
+  - explicit real preflight: pass, exactly one active candidate TOO-149
+  - endpoint smoke: pass for healthz, readyz, status, runs, metrics
+  - live Codex visibility: pass, live token/tool/approval/turn events persisted
+  - command approval: pass, 2 command approval callbacks accepted
+  - file-change/legacy approval: pass in targeted regression tests; not requested by final live turn
+  - token-count guardrail: did not fire by default at total_tokens=4739385
+  - full Go dogfood: pass, run completed in 576.741528s
+  - redispatch suppression: pass, completed active issue skipped with suppressed_after_local_terminal
+  - candidate cleanup: pass, suppression cleared after TOO-149 moved to Human Review
+  - Linear writeback: pass, one Codex Workpad comment updated in place
+  - active candidates after closeout: pass, Todo/In Progress/Rework all empty
+residual_risks:
+  - publication/tag/archive intentionally not run
+```
+
 ### Step Status
 
 | Gate | Result | Notes |
 | --- | --- | --- |
-| Release candidate freeze | fail | Worktree contained release-gate/workflow/test evidence overlay; final proof did not run from a clean committed revision. |
-| Deterministic repository gates | pass | `go test ./...`, `make harness-check`, `make verify`, `make test-fake-e2e`, and default `make test-real-integration` passed. |
+| Release candidate freeze | pass | Candidate `bf0bcbe` was committed before the final live run; only this runbook evidence was updated afterward. |
+| Deterministic repository gates | pass | `git diff --check`, `go test ./...`, `make harness-check`, `make verify`, `make test-fake-e2e`, and default `make test-real-integration` passed. |
 | Operator UI release surface | pass | `npm test`, `npm run build`, `go test ./internal/server ./cmd/symphony`, and dashboard static-serving smoke passed. |
 | Production baseline focused gates | pass | Durable state, operator controls, production safety, and typed Linear write API focused tests passed. |
-| Explicit real preflight | pass | After correcting the workflow project slug, real preflight saw exactly one active candidate, `TOO-145`, and `codex --version` succeeded. |
-| Full Go binary self-dogfood | fail | Go runtime started, endpoint smoke passed, state store was configured, Codex was invoked, and Linear Workpad was written, but the same issue was redispatched after the first turn. |
-| Restart and rollback smoke | partial | Rollback stop passed; restart with the same workspace/state DB showed zero running/retry work after moving `TOO-145` to `Human Review`. Full interrupted retry proof remains blocked by the dogfood NO-GO. |
-| Release artifact readiness | partial | Changed-file classification returned `runtime-build`; `make clean`, `make build`, `bin/symphony --help`, and `bin/symphony run --help` passed. No release archive/tag/publish step ran. |
+| Explicit real preflight | pass | Real preflight saw exactly one active candidate, `TOO-149`, and `codex --version` succeeded. |
+| Full Go binary self-dogfood | pass | Go runtime completed `TOO-149`, persisted live evidence, wrote the Workpad, and did not redispatch the same active issue after completion. |
+| Restart and rollback smoke | pass | Operator cancel suppressions were proven in `TOO-147`/`TOO-148`; final `TOO-149` completion suppression cleared after the issue left active candidates. |
+| Release artifact readiness | pass | Changed-file classification returned `runtime-build`; `make clean`, `make build`, `bin/symphony --help`, and `bin/symphony run --help` passed. No release archive/tag/publish step ran by design. |
 
 ## Release Boundary
 

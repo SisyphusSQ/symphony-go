@@ -41,3 +41,4 @@
 9. [TOO-145] 对齐原版 Symphony 的默认 token 口径：`agent.max_total_tokens` 默认关闭，仅显式正数配置时触发硬停，避免 release dogfood 因观测 token 总量自动停止。
 10. 修复 release gate redispatch blocker：本地终态完成、operator cancel 和非重试 guardrail stop 会写入 SQLite `issue_suppressions`，同一 active state 下跳过 redispatch；同时 Codex app-server live events 会在 turn 运行中持久化 token/tool/turn evidence，非 usage 事件不会覆盖已记录 token totals，并兼容 Codex 0.130 `mcpServer/tool/call` 的 `linear_graphql` 调用形态。
 11. 兼容 Codex 0.130 `item/commandExecution/requestApproval` 与 `item/fileChange/requestApproval`，高权限 dogfood 运行会接受 app-server 提议的命令 policy amendment 和 workspace file-change approval，并记录 `command_approval` / `file_change_approval` live events，避免真实 release gate 卡在 app-server approval 请求上。
+12. 记录 final release gate `TOO-149` 的 `GO` 证据，覆盖 deterministic gates、operator UI gates、真实 dogfood、live event persistence、local-terminal suppression 和 active-candidate cleanup。
