@@ -22,7 +22,7 @@ const (
 	DefaultMaxConcurrentAgents = 10
 	DefaultMaxTurns            = 20
 	DefaultMaxRunDuration      = 4 * time.Hour
-	DefaultMaxTotalTokens      = 500000
+	DefaultMaxTotalTokens      = 0
 	DefaultMaxRetryBackoff     = 5 * time.Minute
 	DefaultStateStoreLease     = 5 * time.Minute
 	DefaultCodexCommand        = "codex app-server"
@@ -331,7 +331,7 @@ func FromWorkflow(def workflow.Definition, opts ...Option) (Config, error) {
 		agent,
 		"agent.max_total_tokens",
 		int(cfg.Agent.MaxTotalTokens),
-		positiveInt,
+		nonNegativeInt,
 	))
 	cfg.Agent.MaxCostUSD = resolver.floatFieldDefault(
 		agent,
@@ -935,6 +935,13 @@ func isEnvName(name string) bool {
 func positiveInt(value int) error {
 	if value <= 0 {
 		return errors.New("must be positive")
+	}
+	return nil
+}
+
+func nonNegativeInt(value int) error {
+	if value < 0 {
+		return errors.New("must not be negative")
 	}
 	return nil
 }

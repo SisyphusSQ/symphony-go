@@ -2,7 +2,7 @@
 tracker:
   kind: linear
   api_key: "$LINEAR_API_KEY"
-  project_slug: "symphony-go-760daeff8700"
+  project_slug: "760daeff8700"
   active_states:
     - Todo
     - In Progress
@@ -23,11 +23,11 @@ server:
 workspace:
   root: "$SYMPHONY_WORKSPACE_ROOT"
 
-# Durable state is optional. When enabled, path is resolved like workspace.root
-# and stores local runs, sessions, retry queue rows, and agent events.
-# state_store:
-#   path: "$SYMPHONY_STATE_DB"
-#   lease_timeout_ms: 300000
+# Durable state records local runs, sessions, retry queue rows, and agent events
+# for restart recovery and release-gate evidence.
+state_store:
+  path: "$SYMPHONY_STATE_DB"
+  lease_timeout_ms: 300000
 
 hooks:
   after_create: |
@@ -62,7 +62,8 @@ agent:
   max_concurrent_agents: 1
   max_turns: 20
   max_run_duration_ms: 14400000
-  max_total_tokens: 500000
+  # Token usage is tracked for observability by default. Set max_total_tokens
+  # to a positive value only when a hard token-count stop is desired.
   # Set both max_cost_usd and cost_per_million_tokens_usd to enable an
   # estimated token-cost guardrail for deployments with a known pricing model.
   max_cost_usd: 0

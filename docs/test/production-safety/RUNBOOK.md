@@ -11,7 +11,7 @@ This runbook covers:
   plus explicit trusted-local opt-in
 - secret redaction for logs, hook output, errors, workflow/config display, and audit payloads
 - durable audit event persistence for important runtime, hook, agent, tool, and guardrail events
-- per-issue max-turn, max-duration, max-token, and optional estimated-cost guardrails
+- per-issue max-turn, max-duration, opt-in positive max-token, and optional estimated-cost guardrails
 
 ## Safety And Side Effects
 
@@ -19,6 +19,7 @@ This runbook covers:
 - Tests may create temporary directories and temporary SQLite databases through Go test helpers.
 - No real token, cookie, credential, database host, connection string, or machine-local secret should be written into this document.
 - Guardrail cost enforcement is an estimate based on configured token price and observed token usage. It is not a billing reconciliation system.
+- Token usage is tracked for observability by default; `agent.max_total_tokens` only hard-stops a run when set to a positive value.
 - This baseline does not implement enterprise RBAC, approval queues, containerized workers, a policy engine, fleet governance, or a secret-manager provider.
 
 ## Preconditions

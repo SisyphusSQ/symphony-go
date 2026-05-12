@@ -51,6 +51,7 @@ Required for explicit enablement:
 export SYMPHONY_REAL_INTEGRATION=1
 export LINEAR_API_KEY=<redacted>
 export SYMPHONY_WORKSPACE_ROOT=/absolute/path/to/isolated/symphony-go-workspaces
+export SYMPHONY_STATE_DB=/absolute/path/to/isolated/symphony-go.sqlite
 export SOURCE_REPO_URL=https://github.com/SisyphusSQ/symphony-go.git
 export SYMPHONY_REAL_DOGFOOD_ISSUE=TOO-xxx
 ```
@@ -83,6 +84,7 @@ Explicit real preflight:
 SYMPHONY_REAL_INTEGRATION=1 \
 LINEAR_API_KEY="$LINEAR_API_KEY" \
 SYMPHONY_WORKSPACE_ROOT="$SYMPHONY_WORKSPACE_ROOT" \
+SYMPHONY_STATE_DB="$SYMPHONY_STATE_DB" \
 SOURCE_REPO_URL="$(git remote get-url origin)" \
 SYMPHONY_REAL_DOGFOOD_ISSUE="$SYMPHONY_REAL_DOGFOOD_ISSUE" \
 make test-real-integration

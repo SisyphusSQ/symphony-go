@@ -237,6 +237,35 @@ func TestIssueRunnerRejectsNegativeMaxTurns(t *testing.T) {
 	}
 }
 
+func TestIssueRunnerDoesNotStopWhenTokenGuardrailIsDisabled(t *testing.T) {
+	client := &fakeTurnClient{results: []TurnResult{{
+		SessionID: "session-1",
+		Status:    "completed",
+		Usage:     TokenUsage{TotalTokens: 5_788_393},
+		Events: []Event{{
+			Kind:    "token_usage_updated",
+			Message: "usage",
+		}},
+	}}}
+
+	result, err := NewRunner(client).Run(context.Background(), RunRequest{
+		Issue:          tracker.Issue{ID: "issue-1", Identifier: "TOO-145"},
+		WorkspacePath:  t.TempDir(),
+		PromptTemplate: "issue {{ issue.identifier }}",
+		MaxTurns:       1,
+		MaxTotalTokens: 0,
+	})
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil with token guardrail disabled", err)
+	}
+	if result.Metadata.Guardrail.Exceeded {
+		t.Fatalf("guardrail = %#v, want disabled", result.Metadata.Guardrail)
+	}
+	if result.Metadata.Usage.TotalTokens != 5_788_393 {
+		t.Fatalf("TotalTokens = %d, want observed usage retained", result.Metadata.Usage.TotalTokens)
+	}
+}
+
 func TestIssueRunnerStopsWhenTokenGuardrailIsExceeded(t *testing.T) {
 	client := &fakeTurnClient{results: []TurnResult{{
 		SessionID: "session-1",

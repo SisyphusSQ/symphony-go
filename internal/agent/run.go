@@ -252,9 +252,6 @@ func normalizeRunRequest(req RunRequest) RunRequest {
 	if normalized.MaxRunDuration == 0 {
 		normalized.MaxRunDuration = config.DefaultMaxRunDuration
 	}
-	if normalized.MaxTotalTokens == 0 {
-		normalized.MaxTotalTokens = config.DefaultMaxTotalTokens
-	}
 	return normalized
 }
 

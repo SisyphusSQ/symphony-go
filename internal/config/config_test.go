@@ -208,6 +208,23 @@ func TestFromWorkflowResolvesEnvAndNormalizesPaths(t *testing.T) {
 	}
 }
 
+func TestFromWorkflowAllowsDisabledTokenGuardrail(t *testing.T) {
+	raw := minimalRawConfig("literal-token", "symphony-go")
+	raw["agent"] = map[string]any{
+		"max_total_tokens": 0,
+	}
+
+	cfg := mustConfig(t, workflow.Definition{
+		Path:           filepath.Join(t.TempDir(), "WORKFLOW.md"),
+		Config:         raw,
+		PromptTemplate: "Prompt",
+	})
+
+	if cfg.Agent.MaxTotalTokens != 0 {
+		t.Fatalf("MaxTotalTokens = %d, want disabled zero", cfg.Agent.MaxTotalTokens)
+	}
+}
+
 func TestFromWorkflowParsesIssueFilterExtension(t *testing.T) {
 	raw := minimalRawConfig("literal-token", "symphony-go")
 	raw["tracker"].(map[string]any)["issue_filter"] = map[string]any{
@@ -383,7 +400,7 @@ func TestFromWorkflowRejectsInvalidConfig(t *testing.T) {
 			"max_concurrent_agents":       0,
 			"max_turns":                   -1,
 			"max_run_duration_ms":         0,
-			"max_total_tokens":            0,
+			"max_total_tokens":            -1,
 			"max_cost_usd":                -1.0,
 			"cost_per_million_tokens_usd": -1.0,
 			"max_retry_backoff_ms":        0,

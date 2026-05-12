@@ -36,3 +36,6 @@
 4. [TOO-136] 新增 Go cutover runbook 与 replacement gate，明确 NO-GO 准入、rollback、post-cutover monitoring 和 residual-risk 处理。
 5. 新增 Go self-dogfood 详细测试方案，明确外部 runner 与 Go binary 证明边界、本地敏感输入文件、真实预检、完整调度、恢复回滚和脱敏证据要求。
 6. [TOO-138] 完成一次 Go binary real self-dogfood smoke，记录 4002 operator endpoint、workspace/state DB、Codex invocation、Linear workpad/state writeback 与 residual risk。
+7. 新增 final core release gate runbook，串联 deterministic gates、operator UI、real dogfood、cutover 与 release artifact readiness 的最终发布判定路径。
+8. [TOO-145] 执行 final core release gate，修正 dogfood workflow 的 Linear project slug 与 state-store 必填口径，并记录 same-issue redispatch 导致本轮 `NO-GO`。
+9. [TOO-145] 对齐原版 Symphony 的默认 token 口径：`agent.max_total_tokens` 默认关闭，仅显式正数配置时触发硬停，避免 release dogfood 因观测 token 总量自动停止。

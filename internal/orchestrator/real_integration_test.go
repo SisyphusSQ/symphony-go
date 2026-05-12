@@ -26,6 +26,7 @@ func TestRealIntegrationProfile(t *testing.T) {
 	requireRealIntegrationEnv(t,
 		"LINEAR_API_KEY",
 		"SYMPHONY_WORKSPACE_ROOT",
+		"SYMPHONY_STATE_DB",
 		"SOURCE_REPO_URL",
 		"SYMPHONY_REAL_DOGFOOD_ISSUE",
 	)
@@ -86,6 +87,7 @@ func TestRealDogfoodWorkflowDefaults(t *testing.T) {
 	cfg, err := config.Load(workflowPath, config.WithEnv(realIntegrationConfigEnv(map[string]string{
 		"LINEAR_API_KEY":          "fake-linear-token",
 		"SYMPHONY_WORKSPACE_ROOT": filepath.Join(t.TempDir(), "workspaces"),
+		"SYMPHONY_STATE_DB":       filepath.Join(t.TempDir(), "state", "symphony.sqlite"),
 	})))
 	if err != nil {
 		t.Fatalf("config.Load(WORKFLOW.md) error = %v", err)
