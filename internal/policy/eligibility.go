@@ -12,25 +12,27 @@ import (
 type Reason string
 
 const (
-	ReasonEligible                  Reason = "eligible"
-	ReasonMissingRequiredField      Reason = "missing_required_field"
-	ReasonTerminalState             Reason = "terminal_state"
-	ReasonInactiveState             Reason = "inactive_state"
-	ReasonAlreadyRunning            Reason = "already_running"
-	ReasonAlreadyClaimed            Reason = "already_claimed"
-	ReasonBlockedByNonTerminalIssue Reason = "blocked_by_non_terminal_issue"
-	ReasonMissingRequiredLabel      Reason = "missing_required_label"
-	ReasonRejectedLabelPresent      Reason = "rejected_label_present"
-	ReasonMissingAnyRequiredLabel   Reason = "missing_any_required_label"
-	ReasonMissingRepoRoutingLabel   Reason = "missing_repo_routing_label"
-	ReasonAmbiguousRepoRoutingLabel Reason = "ambiguous_repo_routing_label"
+	ReasonEligible                     Reason = "eligible"
+	ReasonMissingRequiredField         Reason = "missing_required_field"
+	ReasonTerminalState                Reason = "terminal_state"
+	ReasonInactiveState                Reason = "inactive_state"
+	ReasonAlreadyRunning               Reason = "already_running"
+	ReasonAlreadyClaimed               Reason = "already_claimed"
+	ReasonSuppressedAfterLocalTerminal Reason = "suppressed_after_local_terminal"
+	ReasonBlockedByNonTerminalIssue    Reason = "blocked_by_non_terminal_issue"
+	ReasonMissingRequiredLabel         Reason = "missing_required_label"
+	ReasonRejectedLabelPresent         Reason = "rejected_label_present"
+	ReasonMissingAnyRequiredLabel      Reason = "missing_any_required_label"
+	ReasonMissingRepoRoutingLabel      Reason = "missing_repo_routing_label"
+	ReasonAmbiguousRepoRoutingLabel    Reason = "ambiguous_repo_routing_label"
 )
 
 // RuntimeState captures the in-memory dispatch reservations that make an issue
 // ineligible even when tracker/config state is otherwise dispatchable.
 type RuntimeState struct {
-	RunningIssueIDs map[string]struct{}
-	ClaimedIssueIDs map[string]struct{}
+	RunningIssueIDs    map[string]struct{}
+	ClaimedIssueIDs    map[string]struct{}
+	SuppressedIssueIDs map[string]struct{}
 }
 
 // Eligibility explains whether an issue may be dispatched.
@@ -104,6 +106,9 @@ func CheckEligibility(cfg config.Tracker, issue tracker.Issue, runtime RuntimeSt
 	}
 	if _, ok := runtime.ClaimedIssueIDs[issueID]; ok {
 		return Eligibility{Reason: ReasonAlreadyClaimed}
+	}
+	if _, ok := runtime.SuppressedIssueIDs[issueID]; ok {
+		return Eligibility{Reason: ReasonSuppressedAfterLocalTerminal}
 	}
 	if issueState == "todo" {
 		for _, blocker := range issue.BlockedBy {

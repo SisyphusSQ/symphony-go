@@ -23,8 +23,7 @@ import (
 var ErrMissingDependency = errors.New("missing_orchestrator_dependency")
 
 const (
-	continuationRetryDelay = time.Second
-	failureRetryBaseDelay  = 10 * time.Second
+	failureRetryBaseDelay = 10 * time.Second
 )
 
 // WorkspaceManager is the workspace surface consumed by dispatch and cleanup.
@@ -146,6 +145,13 @@ func (r *Runtime) RetryIssueCount() int {
 	return r.state.retryIssueCount()
 }
 
+// SuppressionIssueCount returns the number of local-terminal dispatch suppressions.
+func (r *Runtime) SuppressionIssueCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.suppressionIssueCount()
+}
+
 // RetryEntries returns a snapshot of queued retry entries.
 func (r *Runtime) RetryEntries() []runstate.Retry {
 	r.mu.Lock()
@@ -228,6 +234,9 @@ func (r *Runtime) RecoverState(ctx context.Context) StartupRecoverySummary {
 	}
 
 	r.mu.Lock()
+	for _, suppression := range snapshot.Suppressions {
+		r.state.addSuppression(suppression)
+	}
 	for _, retry := range snapshot.Retries {
 		r.state.scheduleRetry(retry)
 	}
@@ -235,8 +244,9 @@ func (r *Runtime) RecoverState(ctx context.Context) StartupRecoverySummary {
 	r.mu.Unlock()
 
 	return StartupRecoverySummary{
-		InterruptedRuns:  len(snapshot.InterruptedRuns),
-		RecoveredRetries: len(snapshot.Retries),
+		InterruptedRuns:       len(snapshot.InterruptedRuns),
+		RecoveredRetries:      len(snapshot.Retries),
+		RecoveredSuppressions: len(snapshot.Suppressions),
 	}
 }
 
@@ -349,9 +359,10 @@ type StartupCleanupSummary struct {
 
 // StartupRecoverySummary records durable state restored during startup.
 type StartupRecoverySummary struct {
-	InterruptedRuns  int
-	RecoveredRetries int
-	Err              error
+	InterruptedRuns       int
+	RecoveredRetries      int
+	RecoveredSuppressions int
+	Err                   error
 }
 
 // RunOnce executes one polling tick.
@@ -477,6 +488,7 @@ func (r *Runtime) Tick(ctx context.Context) (TickSummary, error) {
 		return summary, err
 	}
 	summary.Candidates = len(issues)
+	r.reconcileSuppressions(ctx, issues)
 
 	r.handleDueRetries(ctx, cfg, dueRetries, issues, &summary)
 
@@ -541,6 +553,14 @@ func (r *Runtime) tryStart(
 			IssueKey: issue.Identifier,
 			State:    issue.State,
 			Reason:   string(policy.ReasonAlreadyClaimed),
+		}, nil, false
+	}
+	if _, ok := r.state.suppressions[issue.ID]; ok {
+		return SkipSummary{
+			IssueID:  issue.ID,
+			IssueKey: issue.Identifier,
+			State:    issue.State,
+			Reason:   string(policy.ReasonSuppressedAfterLocalTerminal),
 		}, nil, false
 	}
 	if r.state.runningIssueCount() >= cfg.Agent.MaxConcurrentAgents {
@@ -680,6 +700,9 @@ func (r *Runtime) runIssue(ctx context.Context, cfg config.Config, issue tracker
 		CostPerMillionTokensUSD: cfg.Agent.CostPerMillionTokensUSD,
 		Tracker:                 cfg.Tracker,
 		Codex:                   cfg.Codex,
+		OnEvent: func(event agent.Event) {
+			r.persistLiveAgentEvent(ctx, cfg, issue.ID, event)
+		},
 	})
 	sessionID = result.SessionID
 	metadata = result.Metadata
@@ -762,38 +785,30 @@ func (r *Runtime) completeRun(
 
 	now := r.deps.Clock()
 	if normalExit {
-		r.state.completed[issueID] = struct{}{}
-		entry := runstate.Retry{
-			RunID:    record.RunID,
-			IssueID:  issueID,
-			IssueKey: record.IssueKey,
-			Attempt:  1,
-			DueAt:    now.Add(continuationRetryDelay),
-		}
-		r.state.scheduleRetry(entry)
-		dueAt := entry.DueAt
+		suppression := r.state.suppress(record, "completed", now)
 		event = sessionRunEvent(
 			issue,
 			sessionID,
-			observability.EventRetryScheduled,
+			observability.EventOrchestratorDispatchSkipped,
 			observability.RunStatusCompleted,
-			entry.Attempt,
-			"action=retry_schedule retry_state=continuation run_status=completed",
+			record.Attempt,
+			"action=dispatch_suppression reason=suppressed_after_local_terminal run_status=completed",
 			nil,
 		)
-		event.RetryState = observability.RetryStateContinuation
-		event.RetryAttempt = entry.Attempt
-		event.RetryDueAt = &dueAt
+		event.Fields = suppressionFields(suppression)
 		r.mu.Unlock()
 		r.persistSession(ctx, record, sessionID, metadata, now)
-		r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+		if !metadata.LiveEventsForwarded {
+			r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+		}
 		r.persistRunCompletion(ctx, record, runstate.RunStatusCompleted, now, "")
-		r.persistRetry(ctx, entry)
+		r.persistSuppression(ctx, suppression)
 		r.emitEvent(ctx, event)
 		return
 	}
 
 	if !retryable {
+		suppression := r.state.suppress(record, "guardrail_stop", now)
 		event = sessionRunEvent(
 			issue,
 			sessionID,
@@ -806,10 +821,14 @@ func (r *Runtime) completeRun(
 		event.Level = observability.LevelWarn
 		event.Error = exitErr
 		event.Fields = guardrailFields(metadata.Guardrail)
+		event.Fields["suppression_reason"] = string(policy.ReasonSuppressedAfterLocalTerminal)
 		r.mu.Unlock()
 		r.persistSession(ctx, record, sessionID, metadata, now)
-		r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+		if !metadata.LiveEventsForwarded {
+			r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+		}
 		r.persistRunCompletion(ctx, record, runstate.RunStatusStopped, now, exitErr)
+		r.persistSuppression(ctx, suppression)
 		r.emitEvent(ctx, event)
 		return
 	}
@@ -856,7 +875,9 @@ func (r *Runtime) completeRun(
 	}
 	r.mu.Unlock()
 	r.persistSession(ctx, record, sessionID, metadata, now)
-	r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+	if !metadata.LiveEventsForwarded {
+		r.persistAgentEvents(ctx, cfg, record, sessionID, metadata.Events, now)
+	}
 	r.persistRunCompletion(ctx, record, runstate.RunStatusFailed, now, exitErr)
 	r.persistRetry(ctx, entry)
 	r.emitEvent(ctx, event)
@@ -1008,6 +1029,20 @@ func (r *Runtime) deleteRetry(ctx context.Context, issueID string) {
 	_ = r.deps.StateStore.DeleteRetry(ctx, issueID)
 }
 
+func (r *Runtime) persistSuppression(ctx context.Context, suppression runstate.Suppression) {
+	if r.deps.StateStore == nil || suppression.IssueID == "" {
+		return
+	}
+	_ = r.deps.StateStore.UpsertSuppression(ctx, suppression)
+}
+
+func (r *Runtime) deleteSuppression(ctx context.Context, issueID string) {
+	if r.deps.StateStore == nil {
+		return
+	}
+	_ = r.deps.StateStore.DeleteSuppression(ctx, issueID)
+}
+
 func (r *Runtime) persistSession(
 	ctx context.Context,
 	record RunRecord,
@@ -1066,6 +1101,15 @@ func (r *Runtime) persistAgentEvents(
 			"thread":  event.ThreadID,
 			"turn":    event.TurnID,
 		}
+		if event.Usage != nil {
+			payload["usage"] = map[string]any{
+				"input_tokens":            event.Usage.InputTokens,
+				"output_tokens":           event.Usage.OutputTokens,
+				"reasoning_output_tokens": event.Usage.ReasoningOutputTokens,
+				"cached_input_tokens":     event.Usage.CachedInputTokens,
+				"total_tokens":            event.Usage.TotalTokens,
+			}
+		}
 		if event.Payload != "" {
 			payload["payload"] = json.RawMessage(redactor.JSON(event.Payload))
 		}
@@ -1084,6 +1128,48 @@ func (r *Runtime) persistAgentEvents(
 			CreatedAt:   createdAt,
 		})
 	}
+}
+
+func (r *Runtime) persistLiveAgentEvent(
+	ctx context.Context,
+	cfg config.Config,
+	issueID string,
+	event agent.Event,
+) {
+	if event.Kind == "" {
+		return
+	}
+	r.mu.Lock()
+	record, ok := r.state.running[issueID]
+	sessionID := firstNonEmpty(record.SessionID, agentEventSessionID(event))
+	if ok && sessionID != "" && record.SessionID == "" {
+		r.state.updateSession(issueID, sessionID)
+		record = r.state.running[issueID]
+	}
+	r.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	now := r.deps.Clock()
+	if sessionID != "" {
+		_ = r.persistRunUpdate(ctx, record)
+		if event.Usage != nil || event.Kind == "session_started" {
+			metadata := agent.RunMetadata{
+				SessionID:     sessionID,
+				ThreadID:      event.ThreadID,
+				TurnID:        event.TurnID,
+				Status:        statusFromAgentEvent(event),
+				Summary:       event.Message,
+				WorkspacePath: record.WorkspacePath,
+			}
+			if event.Usage != nil {
+				metadata.Usage = *event.Usage
+			}
+			r.persistSession(ctx, record, sessionID, metadata, now)
+		}
+	}
+	r.persistAgentEvents(ctx, cfg, record, sessionID, []agent.Event{event}, now)
 }
 
 // CleanupTerminalWorkspaces removes workspaces for currently terminal tracker issues.
@@ -1202,6 +1288,35 @@ func (r *Runtime) requeueRetriesAfterFetchError(
 		requeued = append(requeued, entry)
 	}
 	return requeued
+}
+
+func (r *Runtime) reconcileSuppressions(ctx context.Context, candidates []tracker.Issue) {
+	active := make(map[string]tracker.Issue, len(candidates))
+	for _, issue := range candidates {
+		active[issue.ID] = issue
+	}
+
+	r.mu.Lock()
+	suppressions := r.state.suppressionEntries()
+	cleared := make([]runstate.Suppression, 0)
+	for _, suppression := range suppressions {
+		issue, ok := active[suppression.IssueID]
+		switch {
+		case !ok:
+			if clearedSuppression, clearedOK := r.state.clearSuppression(suppression.IssueID); clearedOK {
+				cleared = append(cleared, clearedSuppression)
+			}
+		case normalizeState(issue.State) != normalizeState(suppression.State):
+			if clearedSuppression, clearedOK := r.state.clearSuppression(suppression.IssueID); clearedOK {
+				cleared = append(cleared, clearedSuppression)
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	for _, suppression := range cleared {
+		r.deleteSuppression(ctx, suppression.IssueID)
+	}
 }
 
 func (r *Runtime) handleDueRetries(
@@ -1511,6 +1626,35 @@ func guardrailFields(decision agent.GuardrailDecision) map[string]any {
 		"reason": decision.Reason,
 		"limit":  decision.Limit,
 		"actual": decision.Actual,
+	}
+}
+
+func suppressionFields(suppression runstate.Suppression) map[string]any {
+	return map[string]any{
+		"reason":             string(policy.ReasonSuppressedAfterLocalTerminal),
+		"suppression_reason": suppression.Reason,
+		"suppressed_state":   suppression.State,
+		"suppressed_run_id":  suppression.RunID,
+	}
+}
+
+func agentEventSessionID(event agent.Event) string {
+	if event.ThreadID == "" || event.TurnID == "" {
+		return ""
+	}
+	return event.ThreadID + "-" + event.TurnID
+}
+
+func statusFromAgentEvent(event agent.Event) string {
+	switch event.Kind {
+	case "turn_completed":
+		return "completed"
+	case "turn_failed", "error", "timeout", "process_exited":
+		return "failed"
+	case "turn_started", "token_usage_updated", "tool_call", "rate_limits_updated":
+		return "running"
+	default:
+		return ""
 	}
 }
 

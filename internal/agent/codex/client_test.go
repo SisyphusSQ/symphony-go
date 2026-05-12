@@ -131,6 +131,40 @@ func TestClientRunRejectsUnsupportedServerRequest(t *testing.T) {
 	}
 }
 
+func TestClientRunAutoApprovesCommandExecutionRequest(t *testing.T) {
+	result, err := runFakeMode(t, "command-approval", config.Codex{})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	requireEventMethod(t, result.Events, EventCommandApproval, "item/commandExecution/requestApproval")
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q", result.Status)
+	}
+}
+
+func TestClientRunAutoApprovesFileChangeRequest(t *testing.T) {
+	result, err := runFakeMode(t, "file-change-approval", config.Codex{})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	requireEventMethod(t, result.Events, EventFileChangeApproval, "item/fileChange/requestApproval")
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q", result.Status)
+	}
+}
+
+func TestClientRunAutoApprovesLegacyReviewRequests(t *testing.T) {
+	result, err := runFakeMode(t, "legacy-approval", config.Codex{})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	requireEventMethod(t, result.Events, EventFileChangeApproval, "applyPatchApproval")
+	requireEventMethod(t, result.Events, EventCommandApproval, "execCommandApproval")
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q", result.Status)
+	}
+}
+
 func TestClientRunHandlesLinearGraphQLToolCall(t *testing.T) {
 	linearServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "linear-token" {
@@ -171,6 +205,77 @@ func TestClientRunHandlesLinearGraphQLToolCall(t *testing.T) {
 		t.Fatalf("Status = %q", result.Status)
 	}
 	requireEvent(t, result.Events, EventToolCall)
+}
+
+func TestClientRunHandlesLinearGraphQLMCPServerToolCall(t *testing.T) {
+	linearServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "linear-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode Linear request: %v", err)
+		}
+		if request.Query == "" || request.Variables["id"] != "TOO-128" {
+			t.Fatalf("Linear request = %#v", request)
+		}
+		_, _ = w.Write([]byte(`{"data":{"issue":{"identifier":"TOO-128"}}}`))
+	}))
+	defer linearServer.Close()
+
+	workspace := t.TempDir()
+	cfg := testCodexConfig(helperCommand(), 2*time.Second)
+	client := NewClient(WithEnv(
+		"SYMPHONY_FAKE_CODEX=1",
+		"SYMPHONY_FAKE_CODEX_MODE=linear-tool-call-v2",
+		"SYMPHONY_FAKE_EXPECT_ENV=present",
+	))
+	result, err := client.Run(context.Background(), RunRequest{
+		Config:        cfg,
+		Tracker:       config.Tracker{Kind: config.TrackerKindLinear, Endpoint: linearServer.URL, APIKey: "linear-token"},
+		WorkspacePath: workspace,
+		Prompt:        "handle TOO-128",
+		IssueKey:      "TOO-128",
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q", result.Status)
+	}
+	requireEventMethod(t, result.Events, EventToolCall, "mcpServer/tool/call")
+}
+
+func TestClientRunForwardsLiveEventsBeforeTurnCompletion(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := testCodexConfig(helperCommand(), time.Second)
+	cfg.StallTimeout = 25 * time.Millisecond
+	client := NewClient(WithEnv(
+		"SYMPHONY_FAKE_CODEX=1",
+		"SYMPHONY_FAKE_CODEX_MODE=live-token-stall",
+		"SYMPHONY_FAKE_EXPECT_ENV=present",
+	))
+	var liveEvents []Event
+	result, err := client.Run(context.Background(), RunRequest{
+		Config:        cfg,
+		WorkspacePath: workspace,
+		Prompt:        "handle TOO-126",
+		IssueKey:      "TOO-126",
+		OnEvent: func(event Event) {
+			liveEvents = append(liveEvents, event)
+		},
+	})
+	if !IsKind(err, ErrorStallTimeout) {
+		t.Fatalf("Run error = %v, want %s", err, ErrorStallTimeout)
+	}
+	requireEvent(t, liveEvents, EventTokenUsageUpdated)
+	requireEvent(t, result.Events, EventTokenUsageUpdated)
+	if result.Usage.TotalTokens != 30 {
+		t.Fatalf("Usage.TotalTokens = %d, want live token usage before terminal result", result.Usage.TotalTokens)
+	}
 }
 
 func TestRunnerRunAdaptsClientResult(t *testing.T) {
@@ -262,6 +367,16 @@ func requireEvent(t *testing.T, events []Event, kind EventKind) {
 		}
 	}
 	t.Fatalf("missing event %s in %#v", kind, events)
+}
+
+func requireEventMethod(t *testing.T, events []Event, kind EventKind, method string) {
+	t.Helper()
+	for _, event := range events {
+		if event.Kind == kind && event.Method == method {
+			return
+		}
+	}
+	t.Fatalf("missing event %s method %s in %#v", kind, method, events)
 }
 
 func TestFakeCodexAppServer(t *testing.T) {
@@ -390,6 +505,13 @@ func runFakeCodexAppServer() error {
 		time.Sleep(time.Second)
 		return nil
 	}
+	if mode == "live-token-stall" {
+		if err := write(tokenUsageNotification()); err != nil {
+			return err
+		}
+		time.Sleep(time.Second)
+		return nil
+	}
 
 	if mode == "unsupported-request" {
 		if err := write(map[string]any{
@@ -412,6 +534,95 @@ func runFakeCodexAppServer() error {
 		if unsupportedResponse.ID != 99 || unsupportedResponse.Result == nil ||
 			unsupportedResponse.Result.Success {
 			return fmt.Errorf("unsupported response = %#v", unsupportedResponse)
+		}
+	}
+
+	if mode == "command-approval" {
+		if err := write(map[string]any{
+			"id":     99,
+			"method": "item/commandExecution/requestApproval",
+			"params": map[string]any{
+				"threadId":                    "thread-1",
+				"turnId":                      "turn-1",
+				"itemId":                      "call-1",
+				"command":                     "/bin/zsh -lc 'curl -fsS http://127.0.0.1:56691/healthz'",
+				"cwd":                         "/tmp/workspace",
+				"reason":                      "Allow loopback curl for release-gate health evidence.",
+				"proposedExecpolicyAmendment": []string{"curl", "-fsS"},
+			},
+		}); err != nil {
+			return err
+		}
+		approvalResponse, err := readAny()
+		if err != nil {
+			return err
+		}
+		if approvalResponse.ID != 99 || approvalResponse.Result == nil {
+			return fmt.Errorf("approval response = %#v", approvalResponse)
+		}
+		decision, ok := approvalResponse.Result.Decision.(map[string]any)
+		if !ok {
+			return fmt.Errorf("approval decision = %#v, want amendment", approvalResponse.Result.Decision)
+		}
+		amendment, ok := decision["acceptWithExecpolicyAmendment"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("approval decision = %#v, want acceptWithExecpolicyAmendment", decision)
+		}
+		execPolicy, ok := amendment["execpolicy_amendment"].([]any)
+		if !ok || len(execPolicy) != 2 || execPolicy[0] != "curl" || execPolicy[1] != "-fsS" {
+			return fmt.Errorf("execpolicy_amendment = %#v", amendment["execpolicy_amendment"])
+		}
+	}
+
+	if mode == "file-change-approval" {
+		if err := write(map[string]any{
+			"id":     99,
+			"method": "item/fileChange/requestApproval",
+			"params": map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "file-1",
+				"reason":   "Allow workspace-local metadata ignore update.",
+			},
+		}); err != nil {
+			return err
+		}
+		approvalResponse, err := readAny()
+		if err != nil {
+			return err
+		}
+		if approvalResponse.ID != 99 || approvalResponse.Result == nil ||
+			approvalResponse.Result.Decision != "accept" {
+			return fmt.Errorf("file approval response = %#v", approvalResponse)
+		}
+	}
+
+	if mode == "legacy-approval" {
+		for _, request := range []struct {
+			id     int
+			method string
+		}{
+			{id: 99, method: "applyPatchApproval"},
+			{id: 100, method: "execCommandApproval"},
+		} {
+			if err := write(map[string]any{
+				"id":     request.id,
+				"method": request.method,
+				"params": map[string]any{
+					"conversationId": "thread-1",
+					"callId":         "call-1",
+				},
+			}); err != nil {
+				return err
+			}
+			approvalResponse, err := readAny()
+			if err != nil {
+				return err
+			}
+			if approvalResponse.ID != request.id || approvalResponse.Result == nil ||
+				approvalResponse.Result.Decision != "approved" {
+				return fmt.Errorf("legacy approval response = %#v", approvalResponse)
+			}
 		}
 	}
 
@@ -442,18 +653,35 @@ func runFakeCodexAppServer() error {
 			return fmt.Errorf("tool response = %#v", toolResponse)
 		}
 	}
-
-	if err := write(map[string]any{
-		"method": "thread/tokenUsage/updated",
-		"params": map[string]any{
-			"threadId": "thread-1",
-			"turnId":   "turn-1",
-			"tokenUsage": map[string]any{
-				"last":  tokenUsage(1, 2, 3),
-				"total": tokenUsage(10, 20, 30),
+	if mode == "linear-tool-call-v2" {
+		if err := write(map[string]any{
+			"id":     99,
+			"method": "mcpServer/tool/call",
+			"params": map[string]any{
+				"server":   "symphony-go",
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"tool":     "linear_graphql",
+				"arguments": map[string]any{
+					"query":     "query Issue($id: String!) { issue(id: $id) { identifier } }",
+					"variables": map[string]any{"id": "TOO-128"},
+				},
 			},
-		},
-	}); err != nil {
+		}); err != nil {
+			return err
+		}
+		toolResponse, err := readAny()
+		if err != nil {
+			return err
+		}
+		if toolResponse.ID != 99 || toolResponse.Result == nil || toolResponse.Result.IsError ||
+			len(toolResponse.Result.Content) != 1 ||
+			!strings.Contains(toolResponse.Result.Content[0].Text, "TOO-128") {
+			return fmt.Errorf("v2 tool response = %#v", toolResponse)
+		}
+	}
+
+	if err := write(tokenUsageNotification()); err != nil {
 		return err
 	}
 	if err := write(map[string]any{
@@ -483,7 +711,27 @@ type fakeAnyMessage struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"contentItems"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError  bool `json:"isError"`
+		Decision any  `json:"decision"`
 	} `json:"result"`
+}
+
+func tokenUsageNotification() map[string]any {
+	return map[string]any{
+		"method": "thread/tokenUsage/updated",
+		"params": map[string]any{
+			"threadId": "thread-1",
+			"turnId":   "turn-1",
+			"tokenUsage": map[string]any{
+				"last":  tokenUsage(1, 2, 3),
+				"total": tokenUsage(10, 20, 30),
+			},
+		},
+	}
 }
 
 func tokenUsage(input int, output int, total int) map[string]any {
@@ -505,10 +753,10 @@ func assertInitialize(raw json.RawMessage, mode string) error {
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return err
 	}
-	if mode == "linear-tool-call" && !params.Capabilities.ExperimentalAPI {
+	if (mode == "linear-tool-call" || mode == "linear-tool-call-v2") && !params.Capabilities.ExperimentalAPI {
 		return fmt.Errorf("experimentalApi = false, want true")
 	}
-	if mode != "linear-tool-call" && params.Capabilities.ExperimentalAPI {
+	if mode != "linear-tool-call" && mode != "linear-tool-call-v2" && params.Capabilities.ExperimentalAPI {
 		return fmt.Errorf("experimentalApi = true, want false")
 	}
 	return nil
@@ -532,7 +780,7 @@ func assertThreadStart(raw json.RawMessage, mode string) error {
 	if params["sandbox"] != "workspace-write" {
 		return fmt.Errorf("sandbox = %v", params["sandbox"])
 	}
-	if mode == "linear-tool-call" {
+	if mode == "linear-tool-call" || mode == "linear-tool-call-v2" {
 		tools, ok := params["dynamicTools"].([]any)
 		if !ok || len(tools) != 1 {
 			return fmt.Errorf("dynamicTools = %#v", params["dynamicTools"])
@@ -574,7 +822,7 @@ func assertTurnStart(raw json.RawMessage, mode string) error {
 		return fmt.Errorf("sandboxPolicy = %#v", params.SandboxPolicy)
 	}
 	wantPrompt := "handle TOO-126"
-	if mode == "linear-tool-call" {
+	if mode == "linear-tool-call" || mode == "linear-tool-call-v2" {
 		wantPrompt = "handle TOO-128"
 	}
 	if len(params.Input) != 1 || params.Input[0]["type"] != "text" || params.Input[0]["text"] != wantPrompt {

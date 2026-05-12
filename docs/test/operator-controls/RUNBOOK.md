@@ -17,8 +17,8 @@ This runbook covers:
 - The HTTP server binds loopback by default: `127.0.0.1`.
 - No Authentication/RBAC is implemented in this slice; the assumption is local operator access only.
 - `POST /orchestrator/pause` and `POST /orchestrator/drain` suppress new dispatch in the local process.
-- `POST /runs/{id}/cancel` cancels an active in-memory run or removes a queued retry.
-- `POST /runs/{id}/retry` only wakes an existing retry row; it does not create tracker truth for an arbitrary issue id.
+- `POST /runs/{id}/cancel` cancels an active in-memory run, writes a local-terminal suppression, or removes a queued retry.
+- `POST /runs/{id}/retry` wakes an existing retry row or clears an existing local-terminal suppression into an explicit retry path; it does not create tracker truth for an arbitrary issue id.
 - `POST /orchestrator/cleanup?terminal=true` runs terminal workspace cleanup using the configured tracker/workspace/hook dependencies.
 - Do not expose the listener on a non-loopback interface without adding an external access-control layer.
 

@@ -58,6 +58,14 @@ func TestCheckEligibilityStateAndRuntimeGuards(t *testing.T) {
 			},
 			want: ReasonAlreadyClaimed,
 		},
+		{
+			name:  "suppressed issue is rejected",
+			issue: testIssue("TOO-1", "Todo"),
+			runtime: RuntimeState{
+				SuppressedIssueIDs: map[string]struct{}{"issue-TOO-1": {}},
+			},
+			want: ReasonSuppressedAfterLocalTerminal,
+		},
 	}
 
 	for _, tt := range tests {

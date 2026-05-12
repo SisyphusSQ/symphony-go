@@ -9,7 +9,7 @@
 6. [TOO-122] 新增 Linear tracker 只读适配器，覆盖候选 issue、状态刷新、终态拉取、分页错误和 labels/blockers 归一化的 fake GraphQL 测试。
 7. [TOO-123] 新增 issue dispatch policy 与 `tracker.issue_filter` typed extension，覆盖 eligibility、blocker、排序和 repo label routing reason。
 8. [TOO-124] 新增 orchestrator polling 与 dispatch loop，支持 immediate/interval tick、runtime-owned state、workspace + hook + runner pipeline、global/per-state concurrency 和 CLI run startup wiring。
-9. [TOO-125] 新增 orchestrator retry queue、active-run reconciliation 与 terminal workspace cleanup，支持 normal exit continuation retry、exponential backoff cap、non-active release 和 `before_remove` cleanup hook。
+9. [TOO-125] 新增 orchestrator retry queue、active-run reconciliation 与 terminal workspace cleanup，支持 explicit in-run continuation、exponential failure backoff cap、non-active release 和 `before_remove` cleanup hook。
 10. [TOO-126] 新增 Codex app-server JSONL client 与 runner adapter，覆盖 subprocess cwd/env、initialize/thread/turn protocol、token usage、timeouts、process error 和 unsupported server request fake 测试。
 11. [TOO-127] 新增 agent runner strict prompt rendering、attempt/max turns orchestration、Codex timeout/cwd wiring 与 fake client metadata 测试。
 12. [TOO-128] 新增 raw `linear_graphql` agent tool，复用 Linear tracker endpoint/auth，覆盖 structured errors、GraphQL error failure 和 Codex dynamic tool wiring fake 测试。
@@ -39,3 +39,5 @@
 7. 新增 final core release gate runbook，串联 deterministic gates、operator UI、real dogfood、cutover 与 release artifact readiness 的最终发布判定路径。
 8. [TOO-145] 执行 final core release gate，修正 dogfood workflow 的 Linear project slug 与 state-store 必填口径，并记录 same-issue redispatch 导致本轮 `NO-GO`。
 9. [TOO-145] 对齐原版 Symphony 的默认 token 口径：`agent.max_total_tokens` 默认关闭，仅显式正数配置时触发硬停，避免 release dogfood 因观测 token 总量自动停止。
+10. 修复 release gate redispatch blocker：本地终态完成、operator cancel 和非重试 guardrail stop 会写入 SQLite `issue_suppressions`，同一 active state 下跳过 redispatch；同时 Codex app-server live events 会在 turn 运行中持久化 token/tool/turn evidence，非 usage 事件不会覆盖已记录 token totals，并兼容 Codex 0.130 `mcpServer/tool/call` 的 `linear_graphql` 调用形态。
+11. 兼容 Codex 0.130 `item/commandExecution/requestApproval` 与 `item/fileChange/requestApproval`，高权限 dogfood 运行会接受 app-server 提议的命令 policy amendment 和 workspace file-change approval，并记录 `command_approval` / `file_change_approval` live events，避免真实 release gate 卡在 app-server approval 请求上。

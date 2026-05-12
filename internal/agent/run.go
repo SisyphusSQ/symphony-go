@@ -54,6 +54,7 @@ type RunRequest struct {
 	CostPerMillionTokensUSD float64
 	Tracker                 config.Tracker
 	Codex                   config.Codex
+	OnEvent                 func(Event)
 }
 
 type TurnRequest struct {
@@ -67,6 +68,7 @@ type TurnRequest struct {
 	MaxTurns      int
 	Tracker       config.Tracker
 	Codex         config.Codex
+	OnEvent       func(Event)
 }
 
 type RunResult struct {
@@ -94,23 +96,25 @@ type Event struct {
 	TurnID    string
 	Message   string
 	Payload   string
+	Usage     *TokenUsage
 }
 
 type RunMetadata struct {
-	IssueID         string
-	IssueIdentifier string
-	WorkspacePath   string
-	Attempt         *int
-	TurnCount       int
-	MaxTurns        int
-	SessionID       string
-	ThreadID        string
-	TurnID          string
-	Status          string
-	Summary         string
-	Usage           TokenUsage
-	Events          []Event
-	Guardrail       GuardrailDecision
+	IssueID             string
+	IssueIdentifier     string
+	WorkspacePath       string
+	Attempt             *int
+	TurnCount           int
+	MaxTurns            int
+	SessionID           string
+	ThreadID            string
+	TurnID              string
+	Status              string
+	Summary             string
+	Usage               TokenUsage
+	Events              []Event
+	LiveEventsForwarded bool
+	Guardrail           GuardrailDecision
 }
 
 type TokenUsage struct {
@@ -196,6 +200,7 @@ func (runner *IssueRunner) Run(ctx context.Context, req RunRequest) (RunResult, 
 			MaxTurns:      normalized.MaxTurns,
 			Tracker:       normalized.Tracker,
 			Codex:         normalized.Codex,
+			OnEvent:       normalized.OnEvent,
 		})
 
 		metadata.TurnCount = turnNumber
@@ -206,6 +211,9 @@ func (runner *IssueRunner) Run(ctx context.Context, req RunRequest) (RunResult, 
 		metadata.Summary = firstNonEmpty(turnResult.Summary, turnResult.Status)
 		metadata.Usage = turnResult.Usage
 		metadata.Events = append(metadata.Events, cloneEvents(turnResult.Events)...)
+		if normalized.OnEvent != nil {
+			metadata.LiveEventsForwarded = true
+		}
 
 		result = RunResult{
 			SessionID: metadata.SessionID,

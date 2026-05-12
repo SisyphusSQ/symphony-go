@@ -38,7 +38,7 @@ type runtimeState struct {
 	activeIssues map[string]struct{}
 	running      map[string]RunRecord
 	retries      map[string]runstate.Retry
-	completed    map[string]struct{}
+	suppressions map[string]runstate.Suppression
 }
 
 func newRuntimeState() runtimeState {
@@ -46,7 +46,7 @@ func newRuntimeState() runtimeState {
 		activeIssues: map[string]struct{}{},
 		running:      map[string]RunRecord{},
 		retries:      map[string]runstate.Retry{},
-		completed:    map[string]struct{}{},
+		suppressions: map[string]runstate.Suppression{},
 	}
 }
 
@@ -69,6 +69,10 @@ func (s *runtimeState) retryIssueCount() int {
 	return len(s.retries)
 }
 
+func (s *runtimeState) suppressionIssueCount() int {
+	return len(s.suppressions)
+}
+
 func (s *runtimeState) runningByState(state string) int {
 	normalized := normalizeState(state)
 	count := 0
@@ -89,9 +93,14 @@ func (s *runtimeState) policyRuntimeState() policy.RuntimeState {
 	for issueID := range s.retries {
 		claimed[issueID] = struct{}{}
 	}
+	suppressed := make(map[string]struct{}, len(s.suppressions))
+	for issueID := range s.suppressions {
+		suppressed[issueID] = struct{}{}
+	}
 	return policy.RuntimeState{
-		RunningIssueIDs: running,
-		ClaimedIssueIDs: claimed,
+		RunningIssueIDs:    running,
+		ClaimedIssueIDs:    claimed,
+		SuppressedIssueIDs: suppressed,
 	}
 }
 
@@ -116,6 +125,7 @@ func (s *runtimeState) start(
 	s.activeIssues[issue.ID] = struct{}{}
 	s.running[issue.ID] = record
 	delete(s.retries, issue.ID)
+	delete(s.suppressions, issue.ID)
 	return record
 }
 
@@ -170,6 +180,7 @@ func (s *runtimeState) scheduleRetry(entry runstate.Retry) {
 		entry.Attempt = 1
 	}
 	s.retries[entry.IssueID] = entry
+	delete(s.suppressions, entry.IssueID)
 }
 
 func (s *runtimeState) requeueRetry(entry runstate.Retry) {
@@ -202,6 +213,65 @@ func (s *runtimeState) runningRecords() []RunRecord {
 		records = append(records, record)
 	}
 	return records
+}
+
+func (s *runtimeState) suppress(record RunRecord, reason string, now time.Time) runstate.Suppression {
+	if record.IssueID == "" {
+		return runstate.Suppression{}
+	}
+	existing := s.suppressions[record.IssueID]
+	createdAt := existing.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	suppression := runstate.Suppression{
+		IssueID:   record.IssueID,
+		IssueKey:  record.IssueKey,
+		State:     record.State,
+		RunID:     record.RunID,
+		Reason:    reason,
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+	}
+	s.suppressions[record.IssueID] = suppression
+	delete(s.retries, record.IssueID)
+	return suppression
+}
+
+func (s *runtimeState) addSuppression(suppression runstate.Suppression) {
+	if suppression.IssueID == "" {
+		return
+	}
+	s.suppressions[suppression.IssueID] = suppression
+}
+
+func (s *runtimeState) clearSuppression(issueID string) (runstate.Suppression, bool) {
+	suppression, ok := s.suppressions[issueID]
+	if ok {
+		delete(s.suppressions, issueID)
+	}
+	return suppression, ok
+}
+
+func (s *runtimeState) suppressionByTarget(target string) (runstate.Suppression, bool) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return runstate.Suppression{}, false
+	}
+	for _, suppression := range s.suppressions {
+		if suppression.IssueID == target || suppression.IssueKey == target {
+			return suppression, true
+		}
+	}
+	return runstate.Suppression{}, false
+}
+
+func (s *runtimeState) suppressionEntries() []runstate.Suppression {
+	entries := make([]runstate.Suppression, 0, len(s.suppressions))
+	for _, suppression := range s.suppressions {
+		entries = append(entries, suppression)
+	}
+	return entries
 }
 
 func normalizeState(state string) string {

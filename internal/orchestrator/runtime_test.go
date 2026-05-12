@@ -16,6 +16,7 @@ import (
 	"github.com/SisyphusSQ/symphony-go/internal/config"
 	"github.com/SisyphusSQ/symphony-go/internal/hooks"
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
+	"github.com/SisyphusSQ/symphony-go/internal/policy"
 	runstate "github.com/SisyphusSQ/symphony-go/internal/state"
 	"github.com/SisyphusSQ/symphony-go/internal/tracker"
 	"github.com/SisyphusSQ/symphony-go/internal/workspace"
@@ -227,17 +228,14 @@ func TestRuntimeSnapshotCoversLifecycleActiveRunsAndRetryQueue(t *testing.T) {
 
 	close(release)
 	waitUntil(t, func() bool {
-		return runtime.RetryIssueCount() == 1
+		return runtime.RunningIssueCount() == 0
 	})
 	snapshot = runtime.Snapshot()
-	if len(snapshot.ActiveRuns) != 0 || len(snapshot.RetryQueue) != 1 {
-		t.Fatalf("snapshot after completion = %#v, want no active runs and one retry", snapshot)
+	if len(snapshot.ActiveRuns) != 0 || len(snapshot.RetryQueue) != 0 {
+		t.Fatalf("snapshot after completion = %#v, want no active runs or retries", snapshot)
 	}
-	retry := snapshot.RetryQueue[0]
-	if retry.IssueID != "issue-TOO-129" || retry.IssueIdentifier != "TOO-129" ||
-		retry.RetryState != observability.RetryStateContinuation || retry.Attempt != 1 ||
-		!retry.DueAt.Equal(start.Add(3*time.Second)) || retry.Error != "" {
-		t.Fatalf("retry snapshot = %#v", retry)
+	if runtime.SuppressionIssueCount() != 1 {
+		t.Fatalf("SuppressionIssueCount() = %d, want completed issue suppressed", runtime.SuppressionIssueCount())
 	}
 }
 
@@ -282,22 +280,25 @@ func TestRuntimePauseDrainAndResumeControlDispatch(t *testing.T) {
 		t.Fatalf("resumed dispatched = %#v, want TOO-133", summary.Dispatched)
 	}
 	waitUntil(t, func() bool {
-		return runtime.RetryIssueCount() == 1
+		return runtime.RunningIssueCount() == 0
 	})
+	if runtime.SuppressionIssueCount() != 1 {
+		t.Fatalf("SuppressionIssueCount() = %d, want completed issue suppressed", runtime.SuppressionIssueCount())
+	}
 
 	if _, err := runtime.Drain(); err != nil {
 		t.Fatalf("Drain() error = %v", err)
 	}
 	entriesBefore := runtime.RetryEntries()
-	if len(entriesBefore) != 1 {
-		t.Fatalf("RetryEntries before drain tick = %#v, want one retry", entriesBefore)
+	if len(entriesBefore) != 0 {
+		t.Fatalf("RetryEntries before drain tick = %#v, want no continuation retry", entriesBefore)
 	}
 	summary, err = runtime.Tick(context.Background())
 	if err != nil {
 		t.Fatalf("Tick(draining) error = %v", err)
 	}
-	if len(summary.Retries.Dispatched) != 0 || runtime.RetryIssueCount() != 1 {
-		t.Fatalf("draining retry dispatch=%#v retry_count=%d, want retry held", summary.Retries.Dispatched, runtime.RetryIssueCount())
+	if len(summary.Retries.Dispatched) != 0 || runtime.RetryIssueCount() != 0 {
+		t.Fatalf("draining retry dispatch=%#v retry_count=%d, want no retry", summary.Retries.Dispatched, runtime.RetryIssueCount())
 	}
 }
 
@@ -335,8 +336,21 @@ func TestRuntimeCancelRunStopsActiveAttemptWithoutRetry(t *testing.T) {
 	if runtime.RetryIssueCount() != 0 {
 		t.Fatalf("RetryIssueCount() = %d, want no retry after operator cancel", runtime.RetryIssueCount())
 	}
+	if runtime.SuppressionIssueCount() != 1 {
+		t.Fatalf("SuppressionIssueCount() = %d, want cancel suppression", runtime.SuppressionIssueCount())
+	}
 	if len(recorder.EventsByType(observability.EventOperatorControl)) == 0 {
 		t.Fatalf("operator control event was not recorded; events=%#v", recorder.Events())
+	}
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(after cancel) error = %v", err)
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls = %d, want no redispatch after operator cancel", runner.callCount())
+	}
+	if !hasSkip(summary.Skipped, "TOO-133", string(policy.ReasonSuppressedAfterLocalTerminal)) {
+		t.Fatalf("Skipped = %#v, want suppression skip", summary.Skipped)
 	}
 }
 
@@ -420,7 +434,7 @@ func TestRuntimeIgnoresLoggerSinkErrors(t *testing.T) {
 		t.Fatalf("Tick() error = %v", err)
 	}
 	waitUntil(t, func() bool {
-		return runtime.RetryIssueCount() == 1
+		return runtime.RunningIssueCount() == 0
 	})
 	if len(recorder.Events()) == 0 {
 		t.Fatal("recorder did not capture events before returning sink errors")
@@ -578,7 +592,7 @@ func TestRuntimeRunContinuesAfterTransientTrackerFetchError(t *testing.T) {
 	}
 }
 
-func TestRuntimeNormalExitSchedulesContinuationRetryAndRedispatchesWhenDue(t *testing.T) {
+func TestRuntimeNormalExitSuppressesRedispatchWithoutContinuationRetry(t *testing.T) {
 	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
 	clock := newFakeClock(start)
 	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
@@ -604,35 +618,31 @@ func TestRuntimeNormalExitSchedulesContinuationRetryAndRedispatchesWhenDue(t *te
 	requireStarted(t, runner.started, "TOO-1")
 	close(release)
 	waitUntil(t, func() bool {
-		return runtime.RetryIssueCount() == 1
+		return runtime.RunningIssueCount() == 0
 	})
-
-	entry := onlyRetryEntry(t, runtime)
-	if entry.Attempt != 1 || !entry.DueAt.Equal(start.Add(time.Second)) || entry.Error != "" {
-		t.Fatalf("retry entry = %#v, want continuation attempt due in 1s", entry)
+	if runtime.RetryIssueCount() != 0 {
+		t.Fatalf("RetryIssueCount() = %d, want no continuation retry", runtime.RetryIssueCount())
+	}
+	if runtime.SuppressionIssueCount() != 1 {
+		t.Fatalf("SuppressionIssueCount() = %d, want completed issue suppressed", runtime.SuppressionIssueCount())
 	}
 
-	if _, err := runtime.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick(before due) error = %v", err)
-	}
-	if got := runner.callCount(); got != 1 {
-		t.Fatalf("runner calls before retry due = %d, want 1", got)
-	}
-
-	clock.Advance(time.Second)
 	summary, err := runtime.Tick(context.Background())
 	if err != nil {
-		t.Fatalf("Tick(after due) error = %v", err)
+		t.Fatalf("Tick(after completion) error = %v", err)
 	}
-	waitUntil(t, func() bool {
-		return runner.callCount() == 2
-	})
-	if len(summary.Retries.Dispatched) != 1 || summary.Retries.Dispatched[0].Attempt != 1 {
-		t.Fatalf("retry dispatch summary = %#v, want attempt 1 dispatch", summary.Retries.Dispatched)
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls after suppressed tick = %d, want no redispatch", runner.callCount())
 	}
-	requests := runner.requestsSnapshot()
-	if len(requests) != 2 || requests[1].Attempt == nil || *requests[1].Attempt != 1 {
-		t.Fatalf("retry RunRequest.Attempt = %#v, want attempt 1", requests)
+	if !hasSkip(summary.Skipped, "TOO-1", string(policy.ReasonSuppressedAfterLocalTerminal)) {
+		t.Fatalf("Skipped = %#v, want suppression skip", summary.Skipped)
+	}
+	clock.Advance(time.Second)
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(after old continuation delay) error = %v", err)
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls after old continuation delay = %d, want no redispatch", runner.callCount())
 	}
 }
 
@@ -732,6 +742,9 @@ func TestRuntimeGuardrailExceededStopsWithoutRetryAndPersistsRedactedAuditEvents
 	if runtime.RetryIssueCount() != 0 {
 		t.Fatalf("RetryIssueCount() = %d, want no retry after guardrail stop", runtime.RetryIssueCount())
 	}
+	if runtime.SuppressionIssueCount() != 1 {
+		t.Fatalf("SuppressionIssueCount() = %d, want guardrail suppression", runtime.SuppressionIssueCount())
+	}
 	if len(recorder.EventsByType(observability.EventGuardrailExceeded)) == 0 {
 		t.Fatalf("guardrail event missing from logger events: %#v", recorder.Events())
 	}
@@ -743,6 +756,211 @@ func TestRuntimeGuardrailExceededStopsWithoutRetryAndPersistsRedactedAuditEvents
 			t.Fatalf("audit payload leaked literal token: %s", payload)
 		}
 	}
+	summary, err := runtime.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick(after guardrail) error = %v", err)
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runner calls = %d, want no guardrail redispatch", runner.callCount())
+	}
+	if !hasSkip(summary.Skipped, "TOO-134", string(policy.ReasonSuppressedAfterLocalTerminal)) {
+		t.Fatalf("Skipped = %#v, want suppression skip", summary.Skipped)
+	}
+}
+
+func TestRuntimeSuppressionSurvivesStartupRecoveryAndBlocksDispatch(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	store, err := runstate.OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.UpsertSuppression(ctx, runstate.Suppression{
+		IssueID:   "issue-TOO-140",
+		IssueKey:  "TOO-140",
+		State:     "Todo",
+		RunID:     "run-completed",
+		Reason:    "completed",
+		CreatedAt: start,
+		UpdatedAt: start,
+	}); err != nil {
+		t.Fatalf("UpsertSuppression() error = %v", err)
+	}
+	runner := newFakeAgentRunner(nil)
+	runtime, err := NewRuntimeWithDependencies(writeRuntimeWorkflow(t, 5000, 2, "Prompt"), Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-140", "Todo"),
+		}},
+		Workspace:  &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:      &fakeHookRunner{},
+		Runner:     runner,
+		StateStore: store,
+		Clock:      clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+
+	summary, err := runtime.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	if summary.Recovery.RecoveredSuppressions != 1 {
+		t.Fatalf("Recovery = %#v, want one recovered suppression", summary.Recovery)
+	}
+	if runner.callCount() != 0 {
+		t.Fatalf("runner calls = %d, want startup suppression to block dispatch", runner.callCount())
+	}
+	if !hasSkip(summary.Skipped, "TOO-140", string(policy.ReasonSuppressedAfterLocalTerminal)) {
+		t.Fatalf("Skipped = %#v, want suppression skip", summary.Skipped)
+	}
+}
+
+func TestRuntimeSuppressionClearsWhenIssueLeavesCandidateSetOrChangesActiveState(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	trackerClient := &fakeTrackerClient{candidates: []tracker.Issue{
+		runtimeIssue("TOO-141", "Todo"),
+	}}
+	runner := newFakeAgentRunner(nil)
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker:   trackerClient,
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.SuppressionIssueCount() == 1
+	})
+
+	trackerClient.setCandidates(nil)
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(no candidate) error = %v", err)
+	}
+	if runtime.SuppressionIssueCount() != 0 {
+		t.Fatalf("SuppressionIssueCount() = %d, want cleared after issue leaves candidates", runtime.SuppressionIssueCount())
+	}
+
+	trackerClient.setCandidates([]tracker.Issue{runtimeIssue("TOO-141", "Todo")})
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(redispatch after clear) error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runner.callCount() == 2 && runtime.SuppressionIssueCount() == 1
+	})
+
+	trackerClient.setCandidates([]tracker.Issue{runtimeIssue("TOO-141", "Rework")})
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick(state changed) error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runner.callCount() == 3
+	})
+}
+
+func TestRuntimeRetryRunClearsSuppressionAndQueuesExplicitRetry(t *testing.T) {
+	start := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	clock := newFakeClock(start)
+	workflowPath := writeRuntimeWorkflow(t, 5000, 2, "Prompt")
+	runner := newFakeAgentRunner(nil)
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-142", "Todo"),
+		}},
+		Workspace: &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:     &fakeHookRunner{},
+		Runner:    runner,
+		Clock:     clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	waitUntil(t, func() bool {
+		return runtime.SuppressionIssueCount() == 1
+	})
+
+	result, err := runtime.RetryRun(context.Background(), "TOO-142")
+	if err != nil {
+		t.Fatalf("RetryRun() error = %v", err)
+	}
+	if result.Status != controlStatusQueued {
+		t.Fatalf("RetryRun result = %#v, want queued", result)
+	}
+	if runtime.SuppressionIssueCount() != 0 || runtime.RetryIssueCount() != 1 {
+		t.Fatalf("suppression/retry counts = %d/%d, want 0/1", runtime.SuppressionIssueCount(), runtime.RetryIssueCount())
+	}
+	entry := onlyRetryEntry(t, runtime)
+	if !entry.DueAt.Equal(start) || entry.Attempt != 1 || entry.Error != "operator_retry_after_suppression" {
+		t.Fatalf("retry entry = %#v, want explicit immediate retry", entry)
+	}
+}
+
+func TestRuntimePersistsLiveAgentEventsAndTokenUsageDuringRunningTurn(t *testing.T) {
+	workflowPath := writeRuntimeWorkflow(t, 5000, 1, "Prompt")
+	release := make(chan struct{})
+	runner := newFakeAgentRunner(release)
+	runner.liveEvents = [][]agent.Event{{
+		{
+			Kind:     "token_usage_updated",
+			Method:   "thread/tokenUsage/updated",
+			ThreadID: "thread-live",
+			TurnID:   "turn-live",
+			Usage: &agent.TokenUsage{
+				InputTokens:  10,
+				OutputTokens: 20,
+				TotalTokens:  30,
+			},
+			Payload: `{"tokenUsage":{"total":{"totalTokens":30}}}`,
+		},
+		{
+			Kind:     "rate_limits_updated",
+			Method:   "account/rateLimits/updated",
+			ThreadID: "thread-live",
+			TurnID:   "turn-live",
+			Payload:  `{"rateLimits":{"limitName":"fake"}}`,
+		},
+	}}
+	store := &fakeStateStore{}
+	runtime, err := NewRuntimeWithDependencies(workflowPath, Dependencies{
+		Tracker: &fakeTrackerClient{candidates: []tracker.Issue{
+			runtimeIssue("TOO-143", "Todo"),
+		}},
+		Workspace:  &fakeWorkspacePreparer{root: t.TempDir(), createdNow: true},
+		Hooks:      &fakeHookRunner{},
+		Runner:     runner,
+		StateStore: store,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeWithDependencies() error = %v", err)
+	}
+	if _, err := runtime.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	requireStarted(t, runner.started, "TOO-143")
+	waitUntil(t, func() bool {
+		return store.hasEventType("agent.token_usage_updated") && len(store.sessionsSnapshot()) > 0
+	})
+	sessions := store.sessionsSnapshot()
+	if got := sessions[len(sessions)-1].TotalTokens; got != 30 {
+		t.Fatalf("live session TotalTokens = %d, want 30", got)
+	}
+	if runtime.RunningIssueCount() != 1 {
+		t.Fatalf("RunningIssueCount() = %d, want live turn still running", runtime.RunningIssueCount())
+	}
+	close(release)
+	waitUntil(t, func() bool {
+		return runtime.RunningIssueCount() == 0
+	})
 }
 
 func TestRuntimeDueRetryReleasesWhenIssueIsNoLongerCandidate(t *testing.T) {
@@ -1381,6 +1599,7 @@ type fakeAgentRunner struct {
 	release    <-chan struct{}
 	runResults []agent.RunResult
 	runErrors  []error
+	liveEvents [][]agent.Event
 }
 
 func newFakeAgentRunner(release <-chan struct{}) *fakeAgentRunner {
@@ -1397,6 +1616,17 @@ func (f *fakeAgentRunner) Run(ctx context.Context, req agent.RunRequest) (agent.
 	f.mu.Unlock()
 
 	f.started <- req
+	f.mu.Lock()
+	var liveEvents []agent.Event
+	if callIndex < len(f.liveEvents) {
+		liveEvents = cloneAgentEvents(f.liveEvents[callIndex])
+	}
+	f.mu.Unlock()
+	for _, event := range liveEvents {
+		if req.OnEvent != nil {
+			req.OnEvent(event)
+		}
+	}
 	if f.release != nil {
 		select {
 		case <-ctx.Done():
@@ -1417,11 +1647,22 @@ func (f *fakeAgentRunner) Run(ctx context.Context, req agent.RunRequest) (agent.
 	return result, runErr
 }
 
+func cloneAgentEvents(events []agent.Event) []agent.Event {
+	if len(events) == 0 {
+		return nil
+	}
+	cloned := make([]agent.Event, len(events))
+	copy(cloned, events)
+	return cloned
+}
+
 type fakeStateStore struct {
-	mu      sync.Mutex
-	runs    []runstate.Run
-	retries []runstate.Retry
-	events  []runstate.Event
+	mu           sync.Mutex
+	runs         []runstate.Run
+	retries      []runstate.Retry
+	suppressions []runstate.Suppression
+	sessions     []runstate.Session
+	events       []runstate.Event
 }
 
 func (s *fakeStateStore) RecoverStartup(context.Context, time.Time) (runstate.RecoverySnapshot, error) {
@@ -1457,7 +1698,35 @@ func (s *fakeStateStore) DeleteRetry(context.Context, string) error {
 	return nil
 }
 
-func (s *fakeStateStore) RecordSession(context.Context, runstate.Session) error {
+func (s *fakeStateStore) UpsertSuppression(_ context.Context, suppression runstate.Suppression) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, existing := range s.suppressions {
+		if existing.IssueID == suppression.IssueID {
+			s.suppressions[index] = suppression
+			return nil
+		}
+	}
+	s.suppressions = append(s.suppressions, suppression)
+	return nil
+}
+
+func (s *fakeStateStore) DeleteSuppression(_ context.Context, issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, suppression := range s.suppressions {
+		if suppression.IssueID == issueID {
+			s.suppressions = append(s.suppressions[:index], s.suppressions[index+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *fakeStateStore) RecordSession(_ context.Context, session runstate.Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions = append(s.sessions, session)
 	return nil
 }
 
@@ -1493,6 +1762,18 @@ func (s *fakeStateStore) eventsSnapshot() []runstate.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]runstate.Event(nil), s.events...)
+}
+
+func (s *fakeStateStore) suppressionsSnapshot() []runstate.Suppression {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]runstate.Suppression(nil), s.suppressions...)
+}
+
+func (s *fakeStateStore) sessionsSnapshot() []runstate.Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]runstate.Session(nil), s.sessions...)
 }
 
 func (f *fakeAgentRunner) callCount() int {

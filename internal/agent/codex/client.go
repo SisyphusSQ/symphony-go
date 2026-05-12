@@ -103,6 +103,8 @@ const (
 	EventTokenUsageUpdated  EventKind = "token_usage_updated"
 	EventRateLimitsUpdated  EventKind = "rate_limits_updated"
 	EventToolCall           EventKind = "tool_call"
+	EventCommandApproval    EventKind = "command_approval"
+	EventFileChangeApproval EventKind = "file_change_approval"
 	EventUnsupportedRequest EventKind = "unsupported_server_request"
 	EventTimeout            EventKind = "timeout"
 	EventError              EventKind = "error"
@@ -150,6 +152,7 @@ type RunRequest struct {
 	WorkspacePath string
 	Prompt        string
 	IssueKey      string
+	OnEvent       func(Event)
 }
 
 // Client starts and speaks to a local Codex app-server process over JSONL.
@@ -270,14 +273,8 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (Result, error) {
 		now:        c.now,
 		processID:  cmd.Process.Pid,
 		linearTool: linearTool,
-		result: Result{
-			Events: []Event{{
-				Kind:      EventProcessStarted,
-				Timestamp: c.now().UTC(),
-				ProcessID: cmd.Process.Pid,
-			}},
-		},
 	}
+	state.emit(Event{Kind: EventProcessStarted})
 
 	if _, err := state.call(ctx, 1, "initialize", map[string]any{
 		"clientInfo": map[string]any{
@@ -572,10 +569,124 @@ func (s *runState) rejectServerRequest(msg rpcMessage) error {
 }
 
 func (s *runState) handleServerRequest(ctx context.Context, msg rpcMessage) error {
-	if msg.Method == "item/tool/call" {
+	switch msg.Method {
+	case "item/tool/call":
 		return s.handleDynamicToolCall(ctx, msg)
+	case "mcpServer/tool/call":
+		return s.handleMCPServerToolCall(ctx, msg)
+	case "item/commandExecution/requestApproval":
+		return s.handleCommandExecutionApproval(msg)
+	case "item/fileChange/requestApproval":
+		return s.handleFileChangeApproval(msg)
+	case "applyPatchApproval":
+		return s.handleLegacyReviewApproval(msg, EventFileChangeApproval)
+	case "execCommandApproval":
+		return s.handleLegacyReviewApproval(msg, EventCommandApproval)
 	}
 	return s.rejectServerRequest(msg)
+}
+
+func (s *runState) handleCommandExecutionApproval(msg rpcMessage) error {
+	var params commandExecutionApprovalParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		s.emit(Event{
+			Kind:    EventUnsupportedRequest,
+			Method:  msg.Method,
+			Message: "invalid command approval request: " + err.Error(),
+			Payload: msg.Raw,
+		})
+		return s.respondCommandExecutionApproval(msg.ID, "cancel")
+	}
+	decision := commandExecutionApprovalDecision(params)
+	payload, _ := json.Marshal(map[string]any{
+		"thread_id": params.ThreadID,
+		"turn_id":   params.TurnID,
+		"item_id":   params.ItemID,
+		"command":   params.Command,
+		"cwd":       params.CWD,
+		"reason":    params.Reason,
+		"decision":  decision,
+	})
+	s.emit(Event{
+		Kind:     EventCommandApproval,
+		Method:   msg.Method,
+		ThreadID: params.ThreadID,
+		TurnID:   params.TurnID,
+		Message:  "decision=" + commandExecutionDecisionLabel(decision),
+		Payload:  payload,
+	})
+	return s.respondCommandExecutionApproval(msg.ID, decision)
+}
+
+func commandExecutionApprovalDecision(params commandExecutionApprovalParams) any {
+	if len(params.ProposedExecpolicyAmendment) > 0 {
+		return map[string]any{
+			"acceptWithExecpolicyAmendment": map[string]any{
+				"execpolicy_amendment": params.ProposedExecpolicyAmendment,
+			},
+		}
+	}
+	if len(params.ProposedNetworkPolicyAmendments) > 0 {
+		return map[string]any{
+			"applyNetworkPolicyAmendment": map[string]any{
+				"network_policy_amendment": params.ProposedNetworkPolicyAmendments[0],
+			},
+		}
+	}
+	return "accept"
+}
+
+func (s *runState) handleFileChangeApproval(msg rpcMessage) error {
+	var params fileChangeApprovalParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		s.emit(Event{
+			Kind:    EventUnsupportedRequest,
+			Method:  msg.Method,
+			Message: "invalid file change approval request: " + err.Error(),
+			Payload: msg.Raw,
+		})
+		return s.respondApprovalDecision(msg.ID, msg.Method, fileChangeApprovalResponse{Decision: "cancel"})
+	}
+	decision := "accept"
+	payload, _ := json.Marshal(map[string]any{
+		"thread_id":  params.ThreadID,
+		"turn_id":    params.TurnID,
+		"item_id":    params.ItemID,
+		"grant_root": params.GrantRoot,
+		"reason":     params.Reason,
+		"decision":   decision,
+	})
+	s.emit(Event{
+		Kind:     EventFileChangeApproval,
+		Method:   msg.Method,
+		ThreadID: params.ThreadID,
+		TurnID:   params.TurnID,
+		Message:  "decision=" + decision,
+		Payload:  payload,
+	})
+	return s.respondApprovalDecision(msg.ID, msg.Method, fileChangeApprovalResponse{Decision: decision})
+}
+
+func (s *runState) handleLegacyReviewApproval(msg rpcMessage, eventKind EventKind) error {
+	s.emit(Event{
+		Kind:    eventKind,
+		Method:  msg.Method,
+		Message: "decision=approved",
+		Payload: msg.Params,
+	})
+	return s.respondApprovalDecision(msg.ID, msg.Method, legacyReviewApprovalResponse{Decision: "approved"})
+}
+
+func commandExecutionDecisionLabel(decision any) string {
+	if label, ok := decision.(string); ok {
+		return label
+	}
+	if decisionMap, ok := decision.(map[string]any); ok {
+		for key := range decisionMap {
+			return key
+		}
+	}
+	return "accept"
 }
 
 func (s *runState) handleDynamicToolCall(ctx context.Context, msg rpcMessage) error {
@@ -597,6 +708,25 @@ func (s *runState) handleDynamicToolCall(ctx context.Context, msg rpcMessage) er
 	return s.respondDynamicToolResult(msg.ID, result.Success, result.Text())
 }
 
+func (s *runState) handleMCPServerToolCall(ctx context.Context, msg rpcMessage) error {
+	var params mcpServerToolCallParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.respondMCPServerToolFailure(msg.ID, "invalid_tool_call", err.Error())
+	}
+	if params.Tool != lineargraphql.Name || s.linearTool == nil {
+		s.emit(Event{
+			Kind:    EventUnsupportedRequest,
+			Method:  msg.Method,
+			Message: "unsupported mcp server tool: " + params.Tool,
+			Payload: msg.Raw,
+		})
+		return s.respondMCPServerToolFailure(msg.ID, "unsupported_tool", "unsupported mcp server tool: "+params.Tool)
+	}
+	result := s.linearTool.ExecuteJSON(ctx, params.Arguments)
+	s.emitMCPServerToolCall(params, result.Success)
+	return s.respondMCPServerToolResult(msg.ID, !result.Success, result.Text())
+}
+
 func (s *runState) emitToolCall(params dynamicToolCallParams, success bool) {
 	payload, _ := json.Marshal(map[string]any{
 		"tool":    params.Tool,
@@ -606,6 +736,22 @@ func (s *runState) emitToolCall(params dynamicToolCallParams, success bool) {
 	s.emit(Event{
 		Kind:     EventToolCall,
 		Method:   "item/tool/call",
+		ThreadID: params.ThreadID,
+		TurnID:   params.TurnID,
+		Message:  "tool=" + params.Tool,
+		Payload:  payload,
+	})
+}
+
+func (s *runState) emitMCPServerToolCall(params mcpServerToolCallParams, success bool) {
+	payload, _ := json.Marshal(map[string]any{
+		"tool":    params.Tool,
+		"server":  params.Server,
+		"success": success,
+	})
+	s.emit(Event{
+		Kind:     EventToolCall,
+		Method:   "mcpServer/tool/call",
 		ThreadID: params.ThreadID,
 		TurnID:   params.TurnID,
 		Message:  "tool=" + params.Tool,
@@ -650,10 +796,68 @@ func (s *runState) respondDynamicToolResult(id json.RawMessage, success bool, te
 	return nil
 }
 
+func (s *runState) respondMCPServerToolFailure(id json.RawMessage, code string, message string) error {
+	output := map[string]any{
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		return err
+	}
+	return s.respondMCPServerToolResult(id, true, string(data))
+}
+
+func (s *runState) respondMCPServerToolResult(id json.RawMessage, isError bool, text string) error {
+	response := successResponse{
+		ID: id,
+		Result: mcpServerToolCallResponse{
+			Content: []mcpServerToolCallContent{{
+				Type: "text",
+				Text: text,
+			}},
+			IsError: isError,
+		},
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if _, err := s.stdin.Write(data); err != nil {
+		return &Error{Kind: ErrorWriteFailed, Phase: "mcpServer/tool/call", Err: err}
+	}
+	return nil
+}
+
+func (s *runState) respondCommandExecutionApproval(id json.RawMessage, decision any) error {
+	return s.respondApprovalDecision(id, "item/commandExecution/requestApproval", commandExecutionApprovalResponse{
+		Decision: decision,
+	})
+}
+
+func (s *runState) respondApprovalDecision(id json.RawMessage, phase string, result any) error {
+	response := successResponse{ID: id, Result: result}
+	data, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if _, err := s.stdin.Write(data); err != nil {
+		return &Error{Kind: ErrorWriteFailed, Phase: phase, Err: err}
+	}
+	return nil
+}
+
 func (s *runState) emit(event Event) {
 	event.Timestamp = s.now().UTC()
 	event.ProcessID = s.processID
 	s.result.Events = append(s.result.Events, event)
+	if s.req.OnEvent != nil {
+		s.req.OnEvent(event)
+	}
 }
 
 func (s *runState) recordError(err error) {
@@ -734,6 +938,33 @@ type dynamicToolCallParams struct {
 	TurnID    string          `json:"turnId"`
 }
 
+type mcpServerToolCallParams struct {
+	Server    string          `json:"server"`
+	ThreadID  string          `json:"threadId"`
+	TurnID    string          `json:"turnId"`
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type commandExecutionApprovalParams struct {
+	ThreadID                        string            `json:"threadId"`
+	TurnID                          string            `json:"turnId"`
+	ItemID                          string            `json:"itemId"`
+	Command                         *string           `json:"command"`
+	CWD                             *string           `json:"cwd"`
+	Reason                          *string           `json:"reason"`
+	ProposedExecpolicyAmendment     []string          `json:"proposedExecpolicyAmendment"`
+	ProposedNetworkPolicyAmendments []json.RawMessage `json:"proposedNetworkPolicyAmendments"`
+}
+
+type fileChangeApprovalParams struct {
+	ThreadID  string  `json:"threadId"`
+	TurnID    string  `json:"turnId"`
+	ItemID    string  `json:"itemId"`
+	Reason    *string `json:"reason"`
+	GrantRoot *string `json:"grantRoot"`
+}
+
 type dynamicToolCallOutputContentItem struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -742,6 +973,28 @@ type dynamicToolCallOutputContentItem struct {
 type dynamicToolCallResponse struct {
 	ContentItems []dynamicToolCallOutputContentItem `json:"contentItems"`
 	Success      bool                               `json:"success"`
+}
+
+type mcpServerToolCallContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type mcpServerToolCallResponse struct {
+	Content []mcpServerToolCallContent `json:"content"`
+	IsError bool                       `json:"isError"`
+}
+
+type commandExecutionApprovalResponse struct {
+	Decision any `json:"decision"`
+}
+
+type fileChangeApprovalResponse struct {
+	Decision string `json:"decision"`
+}
+
+type legacyReviewApprovalResponse struct {
+	Decision string `json:"decision"`
 }
 
 type rpcMessage struct {

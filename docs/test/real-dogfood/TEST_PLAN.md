@@ -230,8 +230,8 @@ Pass criteria for one issue dispatch:
 - Linear has exactly one active `## Codex Workpad` or configured workpad comment
   for the issue.
 - Any state transition or PR link writeback matches the issue workflow.
-- The state database records the run, session, retry, and event rows needed for
-  restart recovery.
+- The state database records the run, session, suppression or retry, and event
+  rows needed for restart recovery.
 - Logs redact secrets and do not expose raw token values.
 
 ## Recovery And Restart Smoke

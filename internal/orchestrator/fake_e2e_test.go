@@ -97,12 +97,15 @@ func TestFakeE2EProfileCoversCoreLoopWithoutExternalServices(t *testing.T) {
 	}
 
 	waitUntilFakeE2E(t, func() bool {
-		return runtime.RunningIssueCount() == 1 && runtime.RetryIssueCount() == 2
+		return runtime.RunningIssueCount() == 1 &&
+			runtime.RetryIssueCount() == 1 &&
+			runtime.SuppressionIssueCount() == 1
 	}, func() string {
 		return fmt.Sprintf(
-			"running=%d retries=%d events=%#v",
+			"running=%d retries=%d suppressions=%d events=%#v",
 			runtime.RunningIssueCount(),
 			runtime.RetryIssueCount(),
+			runtime.SuppressionIssueCount(),
 			recorder.Events(),
 		)
 	})
@@ -110,7 +113,6 @@ func TestFakeE2EProfileCoversCoreLoopWithoutExternalServices(t *testing.T) {
 	requireWorkspaceFile(t, workspaceRoot, "TOO-E2E-SUCCESS", "before_run.txt", "before_run")
 	requireWorkspaceFile(t, workspaceRoot, "TOO-E2E-SUCCESS", "after_run.txt", "after_run")
 	requireWorkspaceFile(t, workspaceRoot, "TOO-E2E-FAIL", "after_run.txt", "after_run")
-	requireRetryEntry(t, runtime, "TOO-E2E-SUCCESS", "")
 	requireRetryEntry(t, runtime, "TOO-E2E-FAIL", "fake codex failure")
 	requireRecordedEvent(t, recorder, observability.EventAgentRunCompleted)
 	failed := requireRecordedEvent(t, recorder, observability.EventAgentRunFailed)
@@ -141,8 +143,8 @@ func TestFakeE2EProfileCoversCoreLoopWithoutExternalServices(t *testing.T) {
 	}
 
 	snapshot := runtime.Snapshot()
-	if len(snapshot.ActiveRuns) != 0 || len(snapshot.RetryQueue) != 2 {
-		t.Fatalf("snapshot = %#v, want no active runs and two retry rows", snapshot)
+	if len(snapshot.ActiveRuns) != 0 || len(snapshot.RetryQueue) != 1 {
+		t.Fatalf("snapshot = %#v, want no active runs and one failure retry row", snapshot)
 	}
 	counts := fakeLinear.countsSnapshot()
 	if counts.candidateFetches == 0 || counts.terminalFetches == 0 || counts.stateRefreshes == 0 {

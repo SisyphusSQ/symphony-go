@@ -77,6 +77,29 @@ func (r *Runtime) CancelRun(ctx context.Context, target string) (ControlResult, 
 	record, ok := findRunRecord(r.state.running, target)
 	if ok {
 		delete(r.state.running, record.IssueID)
+		suppression := r.state.suppress(record, "operator_cancel", r.deps.Clock())
+		r.mu.Unlock()
+		if record.cancel != nil {
+			record.cancel()
+		}
+		r.persistRunCompletion(ctx, record, runstate.RunStatusStopped, r.deps.Clock(), "operator_cancel")
+		r.persistSuppression(ctx, suppression)
+		result := ControlResult{
+			Action:         "cancel",
+			Target:         target,
+			Status:         controlStatusCanceled,
+			LifecycleState: string(status),
+			Message:        fmt.Sprintf("running issue %s canceled", runRecordTargetLabel(record)),
+		}
+		r.emitControlEvent(ctx, result, nil)
+		r.emitEvent(ctx, runEvent(
+			record.issue(),
+			observability.EventOrchestratorRunStopped,
+			observability.RunStatusStopped,
+			record.Attempt,
+			"action=operator_cancel run_status=stopped",
+		))
+		return result, nil
 	} else if retry, retryOK := findRetryEntry(r.state.retries, target); retryOK {
 		delete(r.state.retries, retry.IssueID)
 		r.mu.Unlock()
@@ -102,31 +125,9 @@ func (r *Runtime) CancelRun(ctx context.Context, target string) (ControlResult, 
 		r.emitControlEvent(ctx, result, ErrControlTargetNotFound)
 		return result, ErrControlTargetNotFound
 	}
-	r.mu.Unlock()
-
-	if record.cancel != nil {
-		record.cancel()
-	}
-	r.persistRunCompletion(ctx, record, runstate.RunStatusStopped, r.deps.Clock(), "operator_cancel")
-	result := ControlResult{
-		Action:         "cancel",
-		Target:         target,
-		Status:         controlStatusCanceled,
-		LifecycleState: string(status),
-		Message:        fmt.Sprintf("running issue %s canceled", runRecordTargetLabel(record)),
-	}
-	r.emitControlEvent(ctx, result, nil)
-	r.emitEvent(ctx, runEvent(
-		record.issue(),
-		observability.EventOrchestratorRunStopped,
-		observability.RunStatusStopped,
-		record.Attempt,
-		"action=operator_cancel run_status=stopped",
-	))
-	return result, nil
 }
 
-// RetryRun wakes an existing retry row by making it due immediately.
+// RetryRun wakes an existing retry row or converts a suppression into an explicit retry.
 func (r *Runtime) RetryRun(ctx context.Context, target string) (ControlResult, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -161,6 +162,31 @@ func (r *Runtime) RetryRun(ctx context.Context, target string) (ControlResult, e
 	}
 	entry, ok := findRetryEntry(r.state.retries, target)
 	if !ok {
+		if suppression, suppressionOK := r.state.suppressionByTarget(target); suppressionOK {
+			entry = runstate.Retry{
+				RunID:    suppression.RunID,
+				IssueID:  suppression.IssueID,
+				IssueKey: suppression.IssueKey,
+				Attempt:  1,
+				DueAt:    r.deps.Clock(),
+				Error:    "operator_retry_after_suppression",
+			}
+			r.state.clearSuppression(suppression.IssueID)
+			r.state.scheduleRetry(entry)
+			r.mu.Unlock()
+
+			r.deleteSuppression(ctx, suppression.IssueID)
+			r.persistRetry(ctx, entry)
+			result := ControlResult{
+				Action:         "retry",
+				Target:         target,
+				Status:         controlStatusQueued,
+				LifecycleState: string(status),
+				Message:        fmt.Sprintf("retry for %s queued immediately", retryTargetLabel(entry)),
+			}
+			r.emitControlEvent(ctx, result, nil)
+			return result, nil
+		}
 		r.mu.Unlock()
 		result := ControlResult{
 			Action:         "retry",

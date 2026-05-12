@@ -15,7 +15,7 @@ candidate revision and the result is written back with sanitized evidence.
 
 ## Current Validation Result
 
-- Recorded date: 2026-05-11
+- Recorded date: 2026-05-12
 - Recorded directory: `docs/test/release-gate/`
 - Run type: release gate execution
 - Current conclusion: `NO-GO`
@@ -39,7 +39,10 @@ candidate revision and the result is written back with sanitized evidence.
   redispatched the same active dogfood issue after the first Codex turn
   completed. The operator was paused, the second run was canceled, the Go
   runtime was stopped, and the dogfood issue was moved to `Human Review` to
-  prevent further automatic dispatch.
+  prevent further automatic dispatch. A later 2026-05-12 live attempt on the
+  frozen token-guardrail candidate remained `NO-GO`: after operator cancel, the
+  same still-active issue was redispatched, and Codex app-server progress was
+  not visible in durable state while the turn was still running.
 
 ```text
 release_candidate: 81af829 plus uncommitted release-gate/workflow/test evidence overlay
@@ -90,6 +93,36 @@ verification_summary:
 residual_risks:
   - final live dogfood still requires selecting exactly one isolated active issue
   - release candidate freeze still requires committing or otherwise freezing the current overlay
+```
+
+### 2026-05-12 TOO-146 Live Dogfood NO-GO
+
+After freezing `6ab0487` and creating a fresh active dogfood issue, the live
+release gate entered the Go runtime path and confirmed that the default token
+guardrail no longer stopped the run. The gate still remained `NO-GO` because the
+runtime could redispatch the same issue after a local terminal operator action
+while Linear still reported the issue as active.
+
+```text
+release_candidate: 6ab0487
+decision: NO-GO
+dogfood_issue: TOO-146
+verification_summary:
+  - deterministic gates before freeze: pass
+  - explicit real preflight: pass, exactly one active candidate TOO-146
+  - runtime endpoint smoke: pass
+  - state DB evidence: running/stopped rows visible
+  - token-count guardrail: did not fire by default
+  - live dogfood: fail, operator cancel immediately allowed redispatch of the same active issue
+  - live Codex visibility: fail, app-server activity was not persisted until the turn returned
+rollback_summary:
+  - Go runtime was stopped
+  - TOO-146 was moved to Human Review and left as historical NO-GO evidence
+  - the next full gate must use a fresh active issue and a fresh workspace/state DB
+fix_required:
+  - persist local-terminal issue suppressions keyed by issue id and active state
+  - do not schedule continuation retry after normal completion
+  - persist selected Codex app-server events as they arrive
 ```
 
 ### Step Status
@@ -236,8 +269,8 @@ Expected:
 | Operator UI serving | yes | `go test ./internal/server -run TestOperatorServerDashboardSmoke -count=1` | `/`, `/api/v1/*`, assets, history fallback, and missing asset behavior are correct. |
 | Production CLI smoke | yes | commands listed below | CLI help, validate, and run startup surfaces succeed. |
 | Explicit real preflight | yes | `SYMPHONY_REAL_INTEGRATION=1 ... make test-real-integration` | Real Linear candidate fetch sees exactly the isolated dogfood issue and `codex --version` succeeds. |
-| Full Go self-dogfood | yes | `go run ./cmd/symphony run ...` plus endpoint/state/Linear evidence | Go binary dispatches exactly one issue with real dependencies, Codex invocation, workpad/state writeback, and coherent state DB evidence. |
-| Restart smoke | yes | stop/restart same workflow, workspace root, and state DB | Completed work is not redispatched; interrupted work becomes issue-scoped retry work. |
+| Full Go self-dogfood | yes | `go run ./cmd/symphony run ...` plus endpoint/state/Linear evidence | Go binary dispatches exactly one issue with real dependencies, Codex invocation, live event/session evidence, workpad/state writeback, and coherent state DB evidence. |
+| Restart smoke | yes | stop/restart same workflow, workspace root, and state DB | Completed/canceled local terminal work is suppressed while the issue remains in the same active state; interrupted work becomes issue-scoped retry work. |
 | Rollback smoke | yes | pause/stop Go, restore external runner, verify no Go dispatch | Operator can return to external runner without double-dispatch. |
 | Release artifact readiness | yes | changelog archive dry-run/write, binary build, release notes review | Version boundary, artifacts, and notes are ready without leaking secrets. |
 
@@ -436,8 +469,8 @@ Pass criteria:
 - Codex receives the target issue prompt and exits with a clear result
 - Linear has exactly one active configured workpad comment for the issue
 - state transition or PR link writeback matches the issue workflow
-- state database records run, session, retry, and event evidence for the same
-  issue
+- state database records run, session, suppression or retry, and event evidence
+  for the same issue
 - logs and committed evidence do not expose secrets
 - external Elixir runner is not responsible for dispatch
 
@@ -453,7 +486,8 @@ Restart smoke:
 
 Pass criteria:
 
-- completed work is not redispatched as a new first attempt
+- completed or operator-canceled active work is not redispatched as a new first
+  attempt while the issue remains in the same active state
 - interrupted work is recovered as issue-scoped retry work
 - retry rows do not duplicate the same issue
 - operator status matches state database and Linear activity

@@ -56,13 +56,14 @@ Codex credentials, or network service dependencies for this profile.
 
 - The fake Linear server receives candidate fetch, terminal fetch, and state
   refresh requests.
-- The runtime dispatches a happy-path issue, schedules a continuation retry,
-  records a representative fake Codex failure, and schedules a failure retry.
+- The runtime dispatches a happy-path issue, suppresses completed active work
+  from immediate redispatch, records a representative fake Codex failure, and
+  schedules a failure retry.
 - A blocked issue is skipped because its blocker is non-terminal.
 - Terminal workspace cleanup runs through `before_remove` and removes the
   temporary workspace.
-- Structured events include issue identifiers, session ids, retry state, and
-  failure error text.
+- Structured events include issue identifiers, session ids, retry state,
+  suppression behavior, and failure error text.
 
 ## Current Validation Result
 

@@ -46,6 +46,11 @@ func (r *Runner) RunTurn(ctx context.Context, req agent.TurnRequest) (agent.Turn
 		WorkspacePath: req.WorkspacePath,
 		Prompt:        req.Prompt,
 		IssueKey:      req.IssueKey,
+		OnEvent: func(event Event) {
+			if req.OnEvent != nil {
+				req.OnEvent(mapEvent(event))
+			}
+		},
 	})
 	return agent.TurnResult{
 		SessionID: result.SessionID,
@@ -110,15 +115,29 @@ func mapEvents(events []Event) []agent.Event {
 	}
 	mapped := make([]agent.Event, 0, len(events))
 	for _, event := range events {
-		mapped = append(mapped, agent.Event{
-			Kind:      string(event.Kind),
-			Method:    event.Method,
-			Timestamp: event.Timestamp,
-			ThreadID:  event.ThreadID,
-			TurnID:    event.TurnID,
-			Message:   event.Message,
-			Payload:   string(event.Payload),
-		})
+		mapped = append(mapped, mapEvent(event))
+	}
+	return mapped
+}
+
+func mapEvent(event Event) agent.Event {
+	mapped := agent.Event{
+		Kind:      string(event.Kind),
+		Method:    event.Method,
+		Timestamp: event.Timestamp,
+		ThreadID:  event.ThreadID,
+		TurnID:    event.TurnID,
+		Message:   event.Message,
+		Payload:   string(event.Payload),
+	}
+	if event.Usage != nil {
+		mapped.Usage = &agent.TokenUsage{
+			InputTokens:           event.Usage.InputTokens,
+			OutputTokens:          event.Usage.OutputTokens,
+			ReasoningOutputTokens: event.Usage.ReasoningOutputTokens,
+			TotalTokens:           event.Usage.TotalTokens,
+			CachedInputTokens:     event.Usage.CachedInputTokens,
+		}
 	}
 	return mapped
 }

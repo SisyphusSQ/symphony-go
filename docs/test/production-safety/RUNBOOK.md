@@ -60,7 +60,8 @@ make harness-review-gate PLAN=.agent/plans/TOO-134.md
   values only for an explicit trusted local run and print an operator warning.
 - Redaction tests prove literal secrets, secret-like keys, token patterns, and secret-bearing paths are replaced before output.
 - Hook, agent, tool, and guardrail audit payloads are persisted only after redaction.
-- Guardrail exceeded results stop the current run without scheduling a retry.
+- Guardrail exceeded results stop the current run, write a local-terminal
+  suppression, and do not schedule a retry.
 - Full Go tests and harness gates exit successfully.
 
 ## Failure Handling

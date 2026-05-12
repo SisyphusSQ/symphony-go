@@ -37,6 +37,8 @@ type Store interface {
 	CompleteRun(ctx context.Context, runID string, status RunStatus, finishedAt time.Time, errText string) error
 	UpsertRetry(ctx context.Context, retry Retry) error
 	DeleteRetry(ctx context.Context, issueID string) error
+	UpsertSuppression(ctx context.Context, suppression Suppression) error
+	DeleteSuppression(ctx context.Context, issueID string) error
 	RecordSession(ctx context.Context, session Session) error
 	RecordEvent(ctx context.Context, event Event) error
 }
@@ -45,6 +47,7 @@ type Store interface {
 type RecoverySnapshot struct {
 	InterruptedRuns []Run
 	Retries         []Retry
+	Suppressions    []Suppression
 }
 
 // Run records one issue execution attempt.
@@ -78,6 +81,18 @@ type Retry struct {
 	DueAt     time.Time
 	BackoffMS int
 	Error     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Suppression records an issue-local terminal outcome that should not be
+// redispatched while the tracker keeps the issue in the same active state.
+type Suppression struct {
+	IssueID   string
+	IssueKey  string
+	State     string
+	RunID     string
+	Reason    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

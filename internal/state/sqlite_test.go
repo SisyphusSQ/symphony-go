@@ -77,6 +77,17 @@ func TestSQLiteStoreCreatesMigratesAndPersistsRunSessionRetryAndEvent(t *testing
 	}); err != nil {
 		t.Fatalf("UpsertRetry() error = %v", err)
 	}
+	if err := store.UpsertSuppression(ctx, Suppression{
+		IssueID:   "issue-suppressed",
+		IssueKey:  "TOO-SUP",
+		State:     "Todo",
+		RunID:     "run-suppressed",
+		Reason:    "completed",
+		CreatedAt: started.Add(2 * time.Second),
+		UpdatedAt: started.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("UpsertSuppression() error = %v", err)
+	}
 	if err := store.RecordEvent(ctx, Event{
 		ID:          "event-1",
 		RunID:       "run-1",
@@ -101,6 +112,10 @@ func TestSQLiteStoreCreatesMigratesAndPersistsRunSessionRetryAndEvent(t *testing
 		recovery.Retries[0].Attempt != 1 {
 		t.Fatalf("Retries = %#v, want persisted retry", recovery.Retries)
 	}
+	if len(recovery.Suppressions) != 1 || recovery.Suppressions[0].IssueID != "issue-suppressed" ||
+		recovery.Suppressions[0].Reason != "completed" {
+		t.Fatalf("Suppressions = %#v, want persisted suppression", recovery.Suppressions)
+	}
 	if got := scalarString(t, store.db, `SELECT status FROM runs WHERE id = 'run-1'`); got != "completed" {
 		t.Fatalf("run status = %q, want completed", got)
 	}
@@ -109,6 +124,12 @@ func TestSQLiteStoreCreatesMigratesAndPersistsRunSessionRetryAndEvent(t *testing
 	}
 	if got := scalarInt(t, store.db, `SELECT count(*) FROM agent_events`); got != 1 {
 		t.Fatalf("agent_events count = %d, want 1", got)
+	}
+	if err := store.DeleteSuppression(ctx, "issue-suppressed"); err != nil {
+		t.Fatalf("DeleteSuppression() error = %v", err)
+	}
+	if got := scalarInt(t, store.db, `SELECT count(*) FROM issue_suppressions`); got != 0 {
+		t.Fatalf("issue_suppressions count = %d, want deleted", got)
 	}
 }
 

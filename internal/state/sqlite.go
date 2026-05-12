@@ -143,6 +143,15 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			created_at text not null,
 			updated_at text not null
 		)`,
+		`CREATE TABLE IF NOT EXISTS issue_suppressions (
+			issue_id text primary key,
+			issue_identifier text not null default '',
+			state text not null default '',
+			run_id text not null default '',
+			reason text not null default '',
+			created_at text not null,
+			updated_at text not null
+		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			session_id text primary key,
 			run_id text not null,
@@ -400,6 +409,50 @@ func (s *SQLiteStore) DeleteRetry(ctx context.Context, issueID string) error {
 	return err
 }
 
+// UpsertSuppression stores or replaces one issue-local dispatch suppression.
+func (s *SQLiteStore) UpsertSuppression(ctx context.Context, suppression Suppression) error {
+	if strings.TrimSpace(suppression.IssueID) == "" {
+		return fmt.Errorf("%w: suppression issue id is required", ErrInvalidStoreRequest)
+	}
+	now := normalizedTime(suppression.UpdatedAt)
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	createdAt := normalizedTime(suppression.CreatedAt)
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO issue_suppressions (
+			issue_id, issue_identifier, state, run_id, reason, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_id) DO UPDATE SET
+			issue_identifier = excluded.issue_identifier,
+			state = excluded.state,
+			run_id = excluded.run_id,
+			reason = excluded.reason,
+			updated_at = excluded.updated_at`,
+		suppression.IssueID,
+		suppression.IssueKey,
+		suppression.State,
+		suppression.RunID,
+		suppression.Reason,
+		formatTime(createdAt),
+		formatTime(now),
+	)
+	return err
+}
+
+// DeleteSuppression removes any local terminal suppression for an issue.
+func (s *SQLiteStore) DeleteSuppression(ctx context.Context, issueID string) error {
+	if strings.TrimSpace(issueID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM issue_suppressions WHERE issue_id = ?`, issueID)
+	return err
+}
+
 // RecordSession upserts the latest session metadata for a run.
 func (s *SQLiteStore) RecordSession(ctx context.Context, session Session) error {
 	if strings.TrimSpace(session.ID) == "" {
@@ -590,10 +643,23 @@ func (s *SQLiteStore) RecoverStartup(ctx context.Context, now time.Time) (Recove
 	if err != nil {
 		return RecoverySnapshot{}, err
 	}
+	suppressionRows, err := tx.QueryContext(
+		ctx,
+		`SELECT issue_id, issue_identifier, state, run_id, reason, created_at, updated_at
+		 FROM issue_suppressions
+		 ORDER BY updated_at, issue_identifier, issue_id`,
+	)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
+	suppressions, err := scanSuppressions(suppressionRows)
+	if err != nil {
+		return RecoverySnapshot{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return RecoverySnapshot{}, err
 	}
-	return RecoverySnapshot{InterruptedRuns: running, Retries: retries}, nil
+	return RecoverySnapshot{InterruptedRuns: running, Retries: retries, Suppressions: suppressions}, nil
 }
 
 func validateRun(run Run) error {
@@ -714,6 +780,38 @@ func scanRetries(rows *sql.Rows) ([]Retry, error) {
 		retries = append(retries, retry)
 	}
 	return retries, rows.Err()
+}
+
+func scanSuppressions(rows *sql.Rows) ([]Suppression, error) {
+	defer rows.Close()
+	var suppressions []Suppression
+	for rows.Next() {
+		var suppression Suppression
+		var createdText, updatedText string
+		if err := rows.Scan(
+			&suppression.IssueID,
+			&suppression.IssueKey,
+			&suppression.State,
+			&suppression.RunID,
+			&suppression.Reason,
+			&createdText,
+			&updatedText,
+		); err != nil {
+			return nil, err
+		}
+		createdAt, err := parseTime(createdText)
+		if err != nil {
+			return nil, err
+		}
+		updatedAt, err := parseTime(updatedText)
+		if err != nil {
+			return nil, err
+		}
+		suppression.CreatedAt = createdAt
+		suppression.UpdatedAt = updatedAt
+		suppressions = append(suppressions, suppression)
+	}
+	return suppressions, rows.Err()
 }
 
 func rollback(tx *sql.Tx) {
