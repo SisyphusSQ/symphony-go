@@ -25,9 +25,38 @@ func TestRootHelp(t *testing.T) {
 		"validate",
 		"run",
 		"tui",
+		"version",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("root help missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	originalVersion := version
+	originalCommit := commit
+	originalBuildTime := buildTime
+	t.Cleanup(func() {
+		version = originalVersion
+		commit = originalCommit
+		buildTime = originalBuildTime
+	})
+	version = "v1.2.3"
+	commit = "abc1234"
+	buildTime = "2026-05-13T00:00:00Z"
+
+	output, err := executeCommand(t, "version")
+	if err != nil {
+		t.Fatalf("expected version to succeed: %v", err)
+	}
+	for _, want := range []string{
+		"version: v1.2.3",
+		"commit: abc1234",
+		"build_time: 2026-05-13T00:00:00Z",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("version output missing %q:\n%s", want, output)
 		}
 	}
 }

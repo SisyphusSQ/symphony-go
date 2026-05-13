@@ -29,6 +29,12 @@ import (
 
 const allowUnsafeCodexEnv = "SYMPHONY_ALLOW_UNSAFE_CODEX"
 
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildTime = "unknown"
+)
+
 func main() {
 	if err := newRootCommand().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -49,6 +55,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		newRunCommand(),
 		newValidateCommand(),
+		newVersionCommand(),
 		newHTTPCommand("status", "Show orchestrator runtime status", http.MethodGet, "/status"),
 		newTUICommand(),
 		newHTTPCommand("pause", "Pause dispatching new issue runs", http.MethodPost, "/orchestrator/pause"),
@@ -61,6 +68,20 @@ func newRootCommand() *cobra.Command {
 	)
 
 	return root
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Show build version information",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Printf("version: %s\n", version)
+			cmd.Printf("commit: %s\n", commit)
+			cmd.Printf("build_time: %s\n", buildTime)
+			return nil
+		},
+	}
 }
 
 func newRunCommand() *cobra.Command {

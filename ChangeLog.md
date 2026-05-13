@@ -45,3 +45,6 @@
 12. 记录 final release gate `TOO-149` 的 `GO` 证据，覆盖 deterministic gates、operator UI gates、真实 dogfood、live event persistence、local-terminal suppression 和 active-candidate cleanup。
 13. 调整 repo-local harness 控制面路径，统一使用 `.agents/`，同步更新 gate、runbook、模板和版本发布 skill 路径约定。
 14. 整理 README/AGENTS 发布文档边界，README 改为产品功能与使用说明，AGENTS 承接协作控制面规则。
+
+#### script:
+1. 新增 Makefile v1.0.0 三平台 release target、checksum、release notes 与内嵌前端 binary 打包能力。

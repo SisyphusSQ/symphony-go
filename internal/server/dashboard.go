@@ -20,10 +20,13 @@ func resolveDashboardFS(cfg Config) fs.FS {
 		return cfg.DashboardFS
 	}
 	dashboardDir := strings.TrimSpace(cfg.DashboardDir)
-	if dashboardDir == "" {
-		dashboardDir = defaultDashboardDir
+	if dashboardDir != "" {
+		return os.DirFS(dashboardDir)
 	}
-	return os.DirFS(dashboardDir)
+	if embedded := embeddedDashboardFS(); dashboardAvailable(embedded) {
+		return embedded
+	}
+	return os.DirFS(defaultDashboardDir)
 }
 
 func (h *handler) serveDashboard(w http.ResponseWriter, r *http.Request) bool {
