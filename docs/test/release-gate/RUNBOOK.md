@@ -548,14 +548,14 @@ release baseline.
 
 ```bash
 git diff --name-only <release-baseline>...HEAD \
-  | python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py classify \
+  | python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py classify \
       --repo . --changed-files-from - --json
 ```
 
 Archive `ChangeLog.md` only when the release version and date are fixed:
 
 ```bash
-python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py release-archive \
+python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py release-archive \
   --repo . \
   --version vX.Y.Z \
   --date YYYYMMDD \

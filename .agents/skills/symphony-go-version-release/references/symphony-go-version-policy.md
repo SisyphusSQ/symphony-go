@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Issue log | Linear issue Doc、Workpad、changeLog `Unreleased` | 每个完成的 issue 都可以追加记录。 |
 | Runtime workflow | `docs/symphony/WORKFLOW.md`、`docs/symphony/symphony.md` | 本机运行口径或自动化 prompt 变化时。 |
-| Harness contract | `docs/harness/*`、`.agent/PLANS.md`、`.agent/prompts/*` | 控制面协议、gate、prompt 或 review 口径变化时。 |
+| Harness contract | `docs/harness/*`、`.agents/PLANS.md`、`.agents/prompts/*` | 控制面协议、gate、prompt 或 review 口径变化时。 |
 | Release artifact | git tag、构建产物、release notes | 只有真实发布 artifact 时变化。 |
 
 不要把 issue 完成、workflow 口径变化和 release artifact 发布当成同一件事。

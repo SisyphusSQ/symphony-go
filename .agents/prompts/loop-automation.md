@@ -6,16 +6,16 @@ Mode: full
 | --- | --- |
 | 文档定位 | 无人值守 / 自动化 loop 的规范页与 Prompt 模板 |
 | 适用范围 | Symphony 围绕一张 Linear issue 自动推进一轮受控 harness loop |
-| 关联文档 | `.agent/prompts/issue-standard-workflow.md`、`.agent/prompts/loop-codex.md`、`AGENTS.md`、`docs/harness/control-plane.md`、`docs/harness/linear.md`、`.agent/guides/code-review.md`、`.agent/PLANS.md` |
+| 关联文档 | `.agents/prompts/issue-standard-workflow.md`、`.agents/prompts/loop-codex.md`、`AGENTS.md`、`docs/harness/control-plane.md`、`docs/harness/linear.md`、`.agents/guides/code-review.md`、`.agents/PLANS.md` |
 
 固定规则：
 
 - 本文用于 automation，不替代仓库级控制面真相。
-- 若本文与 `AGENTS.md`、`docs/harness/*`、`.agent/PLANS.md` 冲突，以后者为准。
+- 若本文与 `AGENTS.md`、`docs/harness/*`、`.agents/PLANS.md` 冲突，以后者为准。
 - 当前 automation 语义优先围绕单张 Linear issue 设计。
 - automation run 的结果面优先是 Linear，而不是本地 `state / runs`。
 - 复杂任务的 `Execution Plan` 优先创建或更新当前 issue 关联的 Linear Doc。
-- `.agent/plans/<issue>.md` 仅作为 ignored 本地 gate cache，不作为协作真相。
+- `.agents/plans/<issue>.md` 仅作为 ignored 本地 gate cache，不作为协作真相。
 - 不默认模拟上层控制器；大任务通过 Milestone / Label / blocker 管理，Symphony 每次只消费当前可执行 issue。
 
 ## 0.1 Optional Superpowers Skill Hooks
@@ -95,10 +95,10 @@ automation 至少要同步以下结果面：
 你必须优先读取以下真相源：
 - 根规则：AGENTS.md
 - 工程控制面：docs/harness/control-plane.md、docs/harness/linear.md
-- 计划协议：.agent/PLANS.md、.agent/plans/TEMPLATE.md、.agent/plans/EXAMPLE-implementation.md
+- 计划协议：.agents/PLANS.md、.agents/plans/TEMPLATE.md、.agents/plans/EXAMPLE-implementation.md
 - 计划主载体：当前 Linear issue 关联的 Execution Plan Doc
-- Prompt 合同：.agent/prompts/*
-- Review / Lint 说明：.agent/guides/*
+- Prompt 合同：.agents/prompts/*
+- Review / Lint 说明：.agents/guides/*
 
 固定主流程：
 collect -> gate -> freeze -> slice -> implement -> verify -> review -> writeback -> pr_prep -> merge -> notify

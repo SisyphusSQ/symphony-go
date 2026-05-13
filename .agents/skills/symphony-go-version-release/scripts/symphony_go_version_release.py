@@ -232,7 +232,7 @@ def classify(paths: list[str], issue: str | None = None) -> dict[str, Any]:
         classification = "changelog-only"
         reasons.append("changeLog file changed")
 
-    if any(p.startswith((".agent/", "docs/harness/", "docs/symphony/")) for p in changed):
+    if any(p.startswith((".agents/", "docs/harness/", "docs/symphony/")) for p in changed):
         classification = "workflow-policy"
         reasons.append("harness/prompt/Symphony workflow policy changed")
 

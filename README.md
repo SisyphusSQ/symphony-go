@@ -1,61 +1,142 @@
 # symphony-go
 
-这是 `symphony-go` 的仓库级 README 模板。
+`symphony-go` 是 Go 版 Symphony，用来把 Linear issue、隔离 workspace、生命周期 hooks、Codex app-server runner、SQLite 本地状态和 operator surface 串成一个可验证的单实例执行循环。
 
-## 当前阶段
+它的目标不是替代所有项目管理工具，而是在一个明确的 Linear project 和一个执行仓库内，稳定地完成 issue 分发、agent 执行、状态恢复、操作员观察与人工收口。
 
-- 当前仓库已完成 harness 控制面初始化
-- 控制面文档统一收口到 `docs/harness/`
-- 初始化后应先确认 `.gitignore`、`.agent/`、`docs/harness/project-constraints.md`、`docs/test/RUNBOOK_TEMPLATE.md`、`scripts/harness/` 是否就位并可执行
-- 若通过 agent 驱动初始化，默认再补齐 `.agent/prompts/` 与 `.agent/guides/`
-- base harness 默认只带 `check + review_gate`
-- `.agent/state/` 与 `.agent/runs/` 默认作为本地辅助运行面存在
+## 功能概览
 
-## 推荐阅读顺序
+- Linear tracker：读取候选 issue、状态、labels、blockers，并提供 typed 写回能力。
+- Dispatch policy：按 workflow 中的 active / terminal states、repo label routing、并发限制和 blocker 规则筛选候选 issue。
+- Workspace manager：为每个 issue 创建隔离目录，做路径归一化、metadata 复用和 root containment 校验。
+- Lifecycle hooks：在 workspace 创建、运行前后、终态清理前执行 shell hook，并记录失败结果。
+- Codex runner：通过 `codex app-server` 执行 agent turn，记录 token、tool、approval、turn 等事件。
+- Durable state：可选 SQLite state store 记录 runs、sessions、retry queue、agent events 和 suppression，用于重启恢复与 release gate 证据。
+- Operator surface：提供本地 HTTP API、CLI 控制命令、只读 TUI 和 Web GUI。
 
-1. `AGENTS.md`
-2. `docs/harness/control-plane.md`
-3. `docs/harness/linear.md`
-4. `docs/harness/project-constraints.md`
-5. `docs/test/RUNBOOK_TEMPLATE.md`
-6. `.agent/PLANS.md`
-7. `.agent/plans/TEMPLATE.md`
-8. `.agent/plans/EXAMPLE-implementation.md`
-9. 若存在，再读 `.agent/prompts/README.md`
-10. 若存在，再读 `.agent/prompts/maintenance-loop.md`
+## v1 边界
 
-## 目录职责
+v1 支持的运行形态是：
 
-| 路径 | 说明 |
+- 单个 Go Symphony 实例
+- 单个 Linear project
+- 单个执行仓库
+- 单个 committed `WORKFLOW.md`
+- 单个 workspace root
+- 单个 SQLite state database
+- loopback operator HTTP surface
+
+v1 不承诺 fleet manager、单实例多 repo 执行、企业 RBAC、审批队列、容器化 worker 隔离、secret-manager provider 或非 Linear tracker adapter。
+
+## 构建与验证
+
+```bash
+make build
+bin/symphony --help
+bin/symphony run --help
+bin/symphony validate --workflow WORKFLOW.md
+```
+
+常用验证入口：
+
+```bash
+make test
+make test-fake-e2e
+make test-real-integration
+make harness-check
+```
+
+`make test-real-integration` 默认安全跳过。只有显式设置真实环境变量并允许外部副作用时，才会进入真实 Linear / Codex dogfood profile。
+
+## 运行
+
+最小本地运行需要准备 `WORKFLOW.md` 中引用的环境变量：
+
+| 环境变量 | 用途 |
 | --- | --- |
-| `docs/harness/` | 控制面规则、Linear 模板与项目级机械约束登记 |
-| `docs/test/` | 通用测试 runbook 模板与后续脱敏结果摘要 |
-| `.agent/` | 计划协议、公开计划模板、实现型 exemplar、本地辅助运行面，以及后续 prompts / guides |
-| `scripts/harness/` | base harness 的最小 gate 脚本与共享 helper |
+| `LINEAR_API_KEY` | Linear GraphQL API 访问凭据 |
+| `SYMPHONY_WORKSPACE_ROOT` | issue workspace 根目录 |
+| `SYMPHONY_STATE_DB` | SQLite durable state 文件路径 |
+| `SOURCE_REPO_URL` | workspace hook 克隆执行仓库时使用的 repo URL |
 
-## 默认 truth split
+启动前先验证 workflow：
 
-- `Linear = 主协作真相`
-- `Linear issue Doc = issue 级 Execution Plan 主载体`
-- `repo = 主执行真相`
-- `PR / MR = 次级代码叙事面`
-- `.agent/state / .agent/runs = 本地辅助运行面`
+```bash
+bin/symphony validate --workflow WORKFLOW.md
+```
 
-固定解释：
+启动 orchestrator 和 operator HTTP server：
 
-- `.agent/plans/` 在公开仓库中只提交模板与示例。
-- 每张复杂 issue 的真实 `Execution Plan` 默认写入该 issue 关联的 Linear Doc。
-- 需要本地 review gate 时，可把 Linear Doc 导出为 `.agent/plans/<issue>.md` 这类 ignored cache；cache 不作为协作真相，不提交。
+```bash
+bin/symphony run --workflow WORKFLOW.md --port 4002 --instance local
+```
 
-## 初始化后先做什么
+默认生产安全口径会拒绝高信任 Codex 设置。仅在可信本机 dogfood 或 release gate 中，显式使用：
 
-1. 检查 `.gitignore`
-2. 确认真实配置、日志、数据库文件不会进入暂存区
-3. 若仓库需要环境配置，优先补 `.env.example`、`settings.example.yaml`
-4. 阅读 `docs/harness/`
-5. 填写 `docs/harness/project-constraints.md` 中的项目级机械约束登记表
-6. 阅读 `docs/test/RUNBOOK_TEMPLATE.md`
-7. 阅读 `.agent/PLANS.md`、`.agent/plans/TEMPLATE.md`、`.agent/plans/EXAMPLE-implementation.md`
-8. 若是 agent 驱动初始化，再补齐 `.agent/prompts/` 与 `.agent/guides/`，并选择 `placeholder / full` 模式
-9. 若存在 `.agent/prompts/maintenance-loop.md`，确认默认 mode 是 `report-only`
-10. 执行 `make harness-verify`
+```bash
+bin/symphony run --workflow WORKFLOW.md --port 4002 --instance local --allow-unsafe-codex
+```
+
+也可以通过 `SYMPHONY_ALLOW_UNSAFE_CODEX=true` 开启同一 opt-in。
+
+## Operator CLI
+
+operator CLI 默认访问 `http://127.0.0.1:4002`。如需连接其它本地端口，设置：
+
+```bash
+export SYMPHONY_OPERATOR_ENDPOINT=http://127.0.0.1:4002
+```
+
+常用命令：
+
+```bash
+bin/symphony status
+bin/symphony doctor
+bin/symphony pause
+bin/symphony resume
+bin/symphony drain
+bin/symphony cancel TOO-123
+bin/symphony retry TOO-123
+bin/symphony cleanup --terminal
+bin/symphony tui
+bin/symphony tui --run TOO-123
+bin/symphony tui --run-id run_xxx
+```
+
+HTTP operator API 也暴露在 loopback 上，核心入口包括 `/healthz`、`/readyz`、`/status`、`/runs`、`/metrics` 和 `/api/v1/*`。
+
+## Web GUI
+
+`web/` 是 Vue 3 + Ant Design Vue 的只读 operator dashboard，覆盖 run list、run detail 和 turn timeline。
+
+开发模式：
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+默认 Vite dev server 监听 `127.0.0.1:5173`，并把 `/api/v1` 代理到 `http://127.0.0.1:4002`。如果 operator server 不在默认地址，设置 `VITE_OPERATOR_PROXY_TARGET`。
+
+生产模式：
+
+```bash
+cd web
+npm run build
+cd ..
+bin/symphony run --workflow WORKFLOW.md --port 4002 --instance local
+```
+
+当 `web/dist/index.html` 存在时，Go operator server 会服务 production dashboard。`/api/v1/*` 始终保留给 Go operator API。
+
+## 文档入口
+
+- 协作规则、truth split、提交边界：`AGENTS.md`
+- harness 控制面：`docs/harness/control-plane.md`
+- Linear 工作流：`docs/harness/linear.md`
+- release gate：`docs/test/release-gate/RUNBOOK.md`
+- real dogfood：`docs/test/real-dogfood/RUNBOOK.md`
+- Go port conformance：`docs/go-port/CONFORMANCE.md`
+
+真实 token、日志、SQLite state、workspace、原始命令输出和机器本地路径不要提交。提交版测试真相应使用 `docs/test/*` 中的脱敏摘要。

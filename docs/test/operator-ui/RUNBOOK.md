@@ -58,7 +58,7 @@ Harness gates:
 
 ```bash
 make harness-check
-make harness-review-gate PLAN=.agent/plans/TOO-144.md
+make harness-review-gate PLAN=.agents/plans/TOO-144.md
 ```
 
 Manual daemon smoke with configured dispatch dependencies:
@@ -105,7 +105,7 @@ cd web && npm run build
 go test ./...
 go test ./internal/server -run TestOperatorServerDashboardSmoke -count=1
 make harness-check
-make harness-review-gate PLAN=.agent/plans/TOO-144.md
+make harness-review-gate PLAN=.agents/plans/TOO-144.md
 ```
 
 Result:

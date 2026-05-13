@@ -16,7 +16,7 @@ description: 当在 symphony-go 仓库处理版本、发布收口、ChangeLog/ch
 3. 决定更新什么之前，先用 dry-run 跑检查：
 
 ```bash
-python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py check \
+python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py check \
   --repo . --json
 ```
 
@@ -35,7 +35,7 @@ python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_re
 使用：
 
 ```bash
-python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py classify \
+python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py classify \
   --repo . \
   --changed-files <文件路径...> --json
 ```
@@ -54,7 +54,7 @@ python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_re
 追加 Unreleased 条目：
 
 ```bash
-python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py changelog-add \
+python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py changelog-add \
   --repo . \
   --issue <ISSUE-ID> --type note --text "<简洁变更说明>" --write --json
 ```
@@ -63,14 +63,14 @@ python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_re
 
 ```bash
 git diff --name-only origin/main...HEAD \
-  | python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py changelog-gate \
+  | python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py changelog-gate \
       --repo . --changed-files-from - --json
 ```
 
 真实 release 时归档：
 
 ```bash
-python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py release-archive \
+python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py release-archive \
   --repo . \
   --version v0.1.0 --date 20260502 --write --json
 ```

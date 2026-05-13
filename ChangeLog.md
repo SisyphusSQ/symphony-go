@@ -1,5 +1,6 @@
 ## Unreleased
 
+### v1.0.0(20260513)
 #### feature:
 1. [TOO-116] 完善 CLI workflow 路径校验，支持 validate 与 run preflight 识别 positional、--workflow 和默认 ./WORKFLOW.md 路径。
 2. [TOO-119] 新增 typed runtime config layer，覆盖 SPEC 默认值、环境变量解析、workspace 路径归一化和启动前校验。
@@ -42,3 +43,5 @@
 10. 修复 release gate redispatch blocker：本地终态完成、operator cancel 和非重试 guardrail stop 会写入 SQLite `issue_suppressions`，同一 active state 下跳过 redispatch；同时 Codex app-server live events 会在 turn 运行中持久化 token/tool/turn evidence，非 usage 事件不会覆盖已记录 token totals，并兼容 Codex 0.130 `mcpServer/tool/call` 的 `linear_graphql` 调用形态。
 11. 兼容 Codex 0.130 `item/commandExecution/requestApproval` 与 `item/fileChange/requestApproval`，高权限 dogfood 运行会接受 app-server 提议的命令 policy amendment 和 workspace file-change approval，并记录 `command_approval` / `file_change_approval` live events，避免真实 release gate 卡在 app-server approval 请求上。
 12. 记录 final release gate `TOO-149` 的 `GO` 证据，覆盖 deterministic gates、operator UI gates、真实 dogfood、live event persistence、local-terminal suppression 和 active-candidate cleanup。
+13. 调整 repo-local harness 控制面路径，统一使用 `.agents/`，同步更新 gate、runbook、模板和版本发布 skill 路径约定。
+14. 整理 README/AGENTS 发布文档边界，README 改为产品功能与使用说明，AGENTS 承接协作控制面规则。

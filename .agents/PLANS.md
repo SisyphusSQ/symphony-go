@@ -5,12 +5,12 @@
 | 文档定位 | 复杂任务的计划协议 |
 | 适用范围 | 跨模块、带风险、需多轮验证、需中断恢复的任务 |
 | 计划主载体 | Linear issue-scoped Doc |
-| 本地导出缓存 | `.agent/plans/<issue>.md`（ignored，不提交） |
-| 关联文档 | `docs/harness/control-plane.md`、`docs/harness/linear.md`、`.agent/prompts/README.md`（如存在） |
+| 本地导出缓存 | `.agents/plans/<issue>.md`（ignored，不提交） |
+| 关联文档 | `docs/harness/control-plane.md`、`docs/harness/linear.md`、`.agents/prompts/README.md`（如存在） |
 
 本文件只定义“什么时候要写 plan、plan 怎么写、执行中怎么维护”。
 具体 issue 级 `Execution Plan` 统一写入该 Linear issue 关联的 Doc。
-`.agent/plans/` 在公开仓库中只保留 `TEMPLATE.md` 与 `EXAMPLE-implementation.md`；
+`.agents/plans/` 在公开仓库中只保留 `TEMPLATE.md` 与 `EXAMPLE-implementation.md`；
 需要本地 review gate 时，可把 Linear Doc 导出为 ignored cache，但 cache 不替代 Linear Doc。
 
 ## 1. 何时必须写 plan
@@ -46,16 +46,16 @@
 | --- | --- |
 | 主载体 | Linear issue-scoped Doc |
 | Doc 标题格式 | `Execution Plan: <ISSUE-ID> - <issue title>` |
-| 本地 cache 位置 | `.agent/plans/<issue>.md` 或其它明确 ignored 的本地路径 |
+| 本地 cache 位置 | `.agents/plans/<issue>.md` 或其它明确 ignored 的本地路径 |
 | cache 命名格式 | `YYYY-MM-DD-<issue-slug>.md` 或 `<ISSUE-ID>-execution-plan.md` |
 | 标题格式 | `# ExecPlan: <任务名>` |
 | 真相来源 | 协议真相看本文件，计划实例真相看 Linear issue Doc |
 
 固定规则：
 
-- 计划协议写在 `.agent/PLANS.md`
+- 计划协议写在 `.agents/PLANS.md`
 - 计划实例写在 Linear issue Doc
-- `.agent/plans/` 只提交模板、示例和被 `.gitignore` 放行的公开文件
+- `.agents/plans/` 只提交模板、示例和被 `.gitignore` 放行的公开文件
 - 本地 cache 只服务 `make harness-review-gate PLAN=<cache-path>`，不提交、不作为恢复真相
 - 不新增第二套 repo-local 计划目录
 - 历史 repo-local 计划不做平行迁移；需要续做时先同步到对应 Linear issue Doc
@@ -130,7 +130,7 @@ isProject: false
 - 主体优先写“实现如何落地”，控制面摘要统一留在尾部
 - 推荐用“按改动面展开”的结构讲清每个模块、接口、数据流和风险
 - `Architecture / Data Flow` 的业务实现 contract 不变，只是推荐用更贴近实施方案的章节顺序承载
-- `.agent/plans/EXAMPLE-implementation.md` 是官方示范文件，用来对齐质量和叙事密度，不替代模板，也不作为真实 issue plan
+- `.agents/plans/EXAMPLE-implementation.md` 是官方示范文件，用来对齐质量和叙事密度，不替代模板，也不作为真实 issue plan
 
 ## 4. 写法约束
 

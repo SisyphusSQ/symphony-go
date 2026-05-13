@@ -47,7 +47,7 @@ Harness gates:
 
 ```bash
 make harness-check
-make harness-review-gate PLAN=.agent/plans/TOO-133-execution-plan.md
+make harness-review-gate PLAN=.agents/plans/TOO-133-execution-plan.md
 ```
 
 Manual startup smoke with an ephemeral local port:

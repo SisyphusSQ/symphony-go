@@ -58,8 +58,8 @@
 - `共享真相源` 默认按上述分层工作，不要求单一载体承载全部真相。
 - `执行护栏` 也是双层：Linear 负责流程，repo 负责执行。
 - 当两层发生冲突时，协作状态以 Linear 为准，执行约束以 repo 为准。
-- `.agent/state` / `.agent/runs` 属于本地辅助运行面；它们补充恢复和审计细节，但不替代 Linear。
-- issue 级 `Execution Plan` 以 Linear issue-scoped Doc 为准；`.agent/plans/<issue>.md` 只作为 ignored 本地导出 cache。
+- `.agents/state` / `.agents/runs` 属于本地辅助运行面；它们补充恢复和审计细节，但不替代 Linear。
+- issue 级 `Execution Plan` 以 Linear issue-scoped Doc 为准；`.agents/plans/<issue>.md` 只作为 ignored 本地导出 cache。
 
 ### 跨仓 truth split（按需）
 
@@ -136,8 +136,8 @@ Maintenance loop 的输出必须包含：
 固定解释：
 
 - maintenance loop 不是新的自动修复脚本，也不要求新增 `maintenance_loop.sh`。
-- `report-only` 可以不写 plan；一旦进入跨文件修复、`issue-create`、`safe-fix`、`rule-promotion` 或外部系统回写，应遵循 `.agent/PLANS.md`。
-- prompts / guides 与 `AGENTS.md`、`docs/harness/*`、`.agent/PLANS.md` 冲突时，以后者为准。
+- `report-only` 可以不写 plan；一旦进入跨文件修复、`issue-create`、`safe-fix`、`rule-promotion` 或外部系统回写，应遵循 `.agents/PLANS.md`。
+- prompts / guides 与 `AGENTS.md`、`docs/harness/*`、`.agents/PLANS.md` 冲突时，以后者为准。
 
 ## Review 口径
 
@@ -190,7 +190,7 @@ Maintenance loop 的输出必须包含：
 - 复杂任务还必须把 `plan_ref` 指向对应 Linear issue Doc；若使用本地导出文件，应记录 `local_plan_cache`
 - 若仓库启用了 PR / MR，再把代码叙事和 review thread 写到 PR / MR
 - 若本轮修改了设计或运行说明，再把必要事实回写到 repo 文档
-- 若仓库启用了 `.agent/state` / `.agent/runs`，可同步记录本地恢复点与批次结果面
+- 若仓库启用了 `.agents/state` / `.agents/runs`，可同步记录本地恢复点与批次结果面
 
 默认解释：
 
@@ -218,28 +218,28 @@ Maintenance loop 的输出必须包含：
 - `neutral`：只要求 agent 能给出 `manual` 或 `blocked` 结论，不假装自动 merge
 - `github` / `gitlab`：只调整默认说明，不改变当前控制面目录结构
 
-## `.agent` 计划 contract
+## `.agents` 计划 contract
 
 ### 目录语义
 
 | 路径 | 语义 |
 | --- | --- |
-| `.agent/PLANS.md` | 复杂任务计划协议 |
-| `.agent/plans/TEMPLATE.md` | 公开计划模板 |
-| `.agent/plans/EXAMPLE-implementation.md` | 实现型计划范例与质量标杆 |
-| `.agent/state/TEMPLATE.md` | 本地辅助恢复面模板 |
-| `.agent/runs/TEMPLATE.md` | 本地辅助结果面模板 |
-| `.agent/skills/` | 可选 repo-local skill 目录 |
+| `.agents/PLANS.md` | 复杂任务计划协议 |
+| `.agents/plans/TEMPLATE.md` | 公开计划模板 |
+| `.agents/plans/EXAMPLE-implementation.md` | 实现型计划范例与质量标杆 |
+| `.agents/state/TEMPLATE.md` | 本地辅助恢复面模板 |
+| `.agents/runs/TEMPLATE.md` | 本地辅助结果面模板 |
+| `.agents/skills/` | 可选 repo-local skill 目录 |
 | Linear issue Doc | issue 级 `Execution Plan` 主载体 |
 
 固定要求：
 
 - 默认初始化计划协议、计划主模板、实现型 exemplar 和本地辅助运行面模板
 - issue 级真实 plan 默认创建或更新在 Linear issue-scoped Doc，不写入公开 repo
-- `.agent/plans/` 只提交 `TEMPLATE.md` 与 `EXAMPLE-implementation.md`
-- `.agent/plans/<issue>.md` 这类文件只允许作为 ignored 本地导出 cache
-- `.agent/state` / `.agent/runs` 服务本地恢复与结果审计，不替代 Linear
-- `.agent/skills` 只在项目有稳定复用的专门流程时补充，不属于 base harness 必备输出
+- `.agents/plans/` 只提交 `TEMPLATE.md` 与 `EXAMPLE-implementation.md`
+- `.agents/plans/<issue>.md` 这类文件只允许作为 ignored 本地导出 cache
+- `.agents/state` / `.agents/runs` 服务本地恢复与结果审计，不替代 Linear
+- `.agents/skills` 只在项目有稳定复用的专门流程时补充，不属于 base harness 必备输出
 - `review_gate` 的输入来自本地 Markdown cache；协作真相仍来自 Linear issue Doc，不依赖额外状态目录
 
 ## 目录级 AGENTS（按需）
@@ -256,8 +256,8 @@ Maintenance loop 的输出必须包含：
 固定规则：
 
 - `docs/harness/` 不承载 prompt 模板
-- 若仓库后续通过 agent 驱动初始化补了 `.agent/prompts/` 与 `.agent/guides/`，这些文件属于使用手册与扩展说明层
-- prompts / guides 与 `docs/harness/*`、`.agent/PLANS.md` 冲突时，以后者为准
+- 若仓库后续通过 agent 驱动初始化补了 `.agents/prompts/` 与 `.agents/guides/`，这些文件属于使用手册与扩展说明层
+- prompts / guides 与 `docs/harness/*`、`.agents/PLANS.md` 冲突时，以后者为准
 - base harness 的 `check / verify` 不依赖 prompts / guides 存在
 - `merge` / `escalation` 默认由 agent 补齐，不要求扩展成 repo-local shell gate
 
@@ -266,9 +266,9 @@ Maintenance loop 的输出必须包含：
 固定要求：
 
 - `docs/harness/*.md` 默认应提交
-- `.agent/plans/TEMPLATE.md` 默认应提交
-- `.agent/plans/EXAMPLE-implementation.md` 默认应提交
-- 若后续补了 `.agent/prompts/` 与 `.agent/guides/`，这些文档默认也应提交
+- `.agents/plans/TEMPLATE.md` 默认应提交
+- `.agents/plans/EXAMPLE-implementation.md` 默认应提交
+- 若后续补了 `.agents/prompts/` 与 `.agents/guides/`，这些文档默认也应提交
 
 同时默认不提交：
 

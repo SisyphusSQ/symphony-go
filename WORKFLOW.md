@@ -94,7 +94,7 @@ Description:
 Implement the Go version of Symphony in this repository.
 
 Treat `SPEC.md` as the product and runtime contract. Treat `AGENTS.md`,
-`docs/harness/*`, `.agent/PLANS.md`, and `.agent/prompts/*` as required
+`docs/harness/*`, `.agents/PLANS.md`, and `.agents/prompts/*` as required
 workflow instructions for every run. The ignored `docs/symphony/` directory may
 hold local operator notes and real machine credentials, but it is not the
 repository-owned source of truth.

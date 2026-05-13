@@ -27,7 +27,7 @@ This runbook covers:
 - Current working directory is the repository root.
 - The branch under test contains the `TOO-134` safety implementation.
 - `go` and `make` are available.
-- The local plan cache exists at `.agent/plans/TOO-134.md` when running the harness review gate.
+- The local plan cache exists at `.agents/plans/TOO-134.md` when running the harness review gate.
 
 ## Commands
 
@@ -47,7 +47,7 @@ Harness gates:
 
 ```bash
 make harness-check
-make harness-review-gate PLAN=.agent/plans/TOO-134.md
+make harness-review-gate PLAN=.agents/plans/TOO-134.md
 ```
 
 ## Expected Results
@@ -81,7 +81,7 @@ Executed in the `TOO-134` workspace:
 go test ./internal/safety ./internal/config ./internal/observability ./internal/agent ./internal/agent/codex ./internal/orchestrator ./internal/state
 go test ./...
 make harness-check
-make harness-review-gate PLAN=.agent/plans/TOO-134.md
+make harness-review-gate PLAN=.agents/plans/TOO-134.md
 ```
 
 Result:

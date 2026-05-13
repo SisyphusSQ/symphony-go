@@ -39,7 +39,7 @@
 - Doc 标题格式：`Execution Plan: <ISSUE-ID> - <issue title>`。
 - issue body 不承载完整计划，只保留必要背景、验收摘要和 Doc 链接 / 引用。
 - `## Symphony Workpad` 不作为计划正文，只记录运行状态、`plan_ref`、`local_plan_cache`、验证摘要和恢复点。
-- 需要运行 `make harness-review-gate` 时，agent 可把 Linear Doc 内容导出到 `.agent/plans/<issue>.md` 或其它 ignored 本地路径。
+- 需要运行 `make harness-review-gate` 时，agent 可把 Linear Doc 内容导出到 `.agents/plans/<issue>.md` 或其它 ignored 本地路径。
 - 本地导出 cache 必须从 Doc 同步而来；Linear Doc 与 cache 冲突时，以 Linear Doc 为准。
 
 ## Symphony 单 Issue 模型

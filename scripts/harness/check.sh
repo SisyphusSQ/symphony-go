@@ -13,13 +13,13 @@ required_files=(
   "docs/harness/linear.md"
   "docs/harness/project-constraints.md"
   "docs/test/RUNBOOK_TEMPLATE.md"
-  ".agent/PLANS.md"
-  ".agent/plans/TEMPLATE.md"
-  ".agent/plans/EXAMPLE-implementation.md"
-  ".agent/state/TEMPLATE.md"
-  ".agent/runs/TEMPLATE.md"
-  ".agent/skills/symphony-go-version-release/SKILL.md"
-  ".agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py"
+  ".agents/PLANS.md"
+  ".agents/plans/TEMPLATE.md"
+  ".agents/plans/EXAMPLE-implementation.md"
+  ".agents/state/TEMPLATE.md"
+  ".agents/runs/TEMPLATE.md"
+  ".agents/skills/symphony-go-version-release/SKILL.md"
+  ".agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py"
   "scripts/harness/check.sh"
   "scripts/harness/common.sh"
   "scripts/harness/review_gate.sh"
@@ -49,7 +49,7 @@ collect_changelog_changed_files() {
 changelog_changed_files="$(collect_changelog_changed_files)"
 if [[ -n "$changelog_changed_files" ]]; then
   printf '%s\n' "$changelog_changed_files" \
-    | python3 .agent/skills/symphony-go-version-release/scripts/symphony_go_version_release.py \
+    | python3 .agents/skills/symphony-go-version-release/scripts/symphony_go_version_release.py \
       changelog-gate --repo . --changed-files-from - --json >/dev/null
 fi
 
@@ -79,13 +79,13 @@ required_gitignore_patterns=(
   "logs/"
   "tmp/"
   "temp/"
-  ".agent/plans/*"
-  "!.agent/plans/TEMPLATE.md"
-  "!.agent/plans/EXAMPLE-implementation.md"
-  ".agent/state/*"
-  "!.agent/state/TEMPLATE.md"
-  ".agent/runs/*"
-  "!.agent/runs/TEMPLATE.md"
+  ".agents/plans/*"
+  "!.agents/plans/TEMPLATE.md"
+  "!.agents/plans/EXAMPLE-implementation.md"
+  ".agents/state/*"
+  "!.agents/state/TEMPLATE.md"
+  ".agents/runs/*"
+  "!.agents/runs/TEMPLATE.md"
   "docs/symphony/"
   ".cursor/*"
   "!.cursor/rules/"
@@ -125,9 +125,9 @@ if [[ -f ".cursor/rules/harness.mdc" ]]; then
     "docs/harness/control-plane.md"
     "docs/harness/linear.md"
     "docs/harness/project-constraints.md"
-    ".agent/PLANS.md"
-    ".agent/plans/TEMPLATE.md"
-    ".agent/plans/EXAMPLE-implementation.md"
+    ".agents/PLANS.md"
+    ".agents/plans/TEMPLATE.md"
+    ".agents/plans/EXAMPLE-implementation.md"
     "docs/test/RUNBOOK_TEMPLATE.md"
     "make harness-verify"
   )
@@ -152,14 +152,14 @@ required_control_plane_patterns=(
   "report-only"
   "rule-promotion"
   "目录级 AGENTS"
-  ".agent/skills"
+  ".agents/skills"
   "运行反馈默认回写到 Linear"
   "结果回写默认写回 Linear"
   "review_gate"
   "merge"
   "escalation"
-  ".agent/PLANS.md"
-  ".agent/plans/TEMPLATE.md"
+  ".agents/PLANS.md"
+  ".agents/plans/TEMPLATE.md"
   "Linear issue Doc"
   "local-plan-cache"
 )
@@ -246,8 +246,8 @@ for pattern in "${required_linear_patterns[@]}"; do
   fi
 done
 
-if rg -Fq "docs/harness/prompt-templates.md" .agent/PLANS.md; then
-  echo ".agent/PLANS.md should not reference docs/harness/prompt-templates.md anymore" >&2
+if rg -Fq "docs/harness/prompt-templates.md" .agents/PLANS.md; then
+  echo ".agents/PLANS.md should not reference docs/harness/prompt-templates.md anymore" >&2
   exit 1
 fi
 
@@ -289,16 +289,16 @@ required_plans_patterns=(
 )
 
 for pattern in "${required_plans_patterns[@]}"; do
-  if ! rg -Fq "$pattern" .agent/PLANS.md; then
-    echo ".agent/PLANS.md missing required section or keyword: $pattern" >&2
+  if ! rg -Fq "$pattern" .agents/PLANS.md; then
+    echo ".agents/PLANS.md missing required section or keyword: $pattern" >&2
     exit 1
   fi
 done
 
-repo_plan_dir="\\.agent/plans/"
+repo_plan_dir="\\.agents/plans/"
 stale_plan_regex="具体计划实例""统一写入.*${repo_plan_dir}|计划实例""写在.*${repo_plan_dir}|计划实例""真相看.*${repo_plan_dir}"
 
-if rg -q "$stale_plan_regex" .agent/PLANS.md .agent/prompts docs/harness README.md AGENTS.md; then
+if rg -q "$stale_plan_regex" .agents/PLANS.md .agents/prompts docs/harness README.md AGENTS.md; then
   echo "stale repo-local plan instance wording remains" >&2
   exit 1
 fi
@@ -310,14 +310,14 @@ local_elixir_regex="$local_user_prefix/Coding/eli""xir"
 local_workflow_regex="$local_user_prefix/Coding/golang/00_self/symphony-go/docs/sym""phony/WORKFLOW.md"
 
 if rg -n "$secret_token_regex|$local_workspace_regex|$local_elixir_regex|$local_workflow_regex" \
-  README.md AGENTS.md docs/design docs/harness docs/test .agent scripts Makefile >/dev/null; then
+  README.md AGENTS.md docs/design docs/harness docs/test .agents scripts Makefile >/dev/null; then
   echo "public docs or scripts contain local Symphony secrets/paths" >&2
   exit 1
 fi
 
 for required in "linear_project" "current_linear_state" "recovery_point" "next_action" "state_ref" "latest_run_ref" "workflow_run_ref"; do
-  if ! rg -Fq "$required" .agent/plans/TEMPLATE.md; then
-    echo ".agent/plans/TEMPLATE.md missing required field: $required" >&2
+  if ! rg -Fq "$required" .agents/plans/TEMPLATE.md; then
+    echo ".agents/plans/TEMPLATE.md missing required field: $required" >&2
     exit 1
   fi
 done
@@ -362,8 +362,8 @@ required_plan_template_patterns=(
 )
 
 for pattern in "${required_plan_template_patterns[@]}"; do
-  if ! rg -Fq "$pattern" .agent/plans/TEMPLATE.md; then
-    echo ".agent/plans/TEMPLATE.md missing required pattern: $pattern" >&2
+  if ! rg -Fq "$pattern" .agents/plans/TEMPLATE.md; then
+    echo ".agents/plans/TEMPLATE.md missing required pattern: $pattern" >&2
     exit 1
   fi
 done
@@ -384,8 +384,8 @@ required_example_patterns=(
 )
 
 for pattern in "${required_example_patterns[@]}"; do
-  if ! rg -Fq "$pattern" .agent/plans/EXAMPLE-implementation.md; then
-    echo ".agent/plans/EXAMPLE-implementation.md missing required pattern: $pattern" >&2
+  if ! rg -Fq "$pattern" .agents/plans/EXAMPLE-implementation.md; then
+    echo ".agents/plans/EXAMPLE-implementation.md missing required pattern: $pattern" >&2
     exit 1
   fi
 done
@@ -398,29 +398,29 @@ required_state_run_patterns=(
 )
 
 for pattern in "${required_state_run_patterns[@]}"; do
-  if ! rg -Fq "$pattern" .agent/state/TEMPLATE.md .agent/runs/TEMPLATE.md; then
+  if ! rg -Fq "$pattern" .agents/state/TEMPLATE.md .agents/runs/TEMPLATE.md; then
     echo "state/run templates missing required pattern: $pattern" >&2
     exit 1
   fi
 done
 
 optional_mode_files=(
-  ".agent/prompts/issue-standard-workflow.md"
-  ".agent/prompts/loop-codex.md"
-  ".agent/prompts/loop-automation.md"
-  ".agent/prompts/maintenance-loop.md"
-  ".agent/guides/code-review.md"
-  ".agent/guides/linter.md"
+  ".agents/prompts/issue-standard-workflow.md"
+  ".agents/prompts/loop-codex.md"
+  ".agents/prompts/loop-automation.md"
+  ".agents/prompts/maintenance-loop.md"
+  ".agents/guides/code-review.md"
+  ".agents/guides/linter.md"
 )
 
 optional_bundle_files=(
-  ".agent/prompts/README.md"
-  ".agent/prompts/issue-standard-workflow.md"
-  ".agent/prompts/loop-codex.md"
-  ".agent/prompts/loop-automation.md"
-  ".agent/prompts/maintenance-loop.md"
-  ".agent/guides/code-review.md"
-  ".agent/guides/linter.md"
+  ".agents/prompts/README.md"
+  ".agents/prompts/issue-standard-workflow.md"
+  ".agents/prompts/loop-codex.md"
+  ".agents/prompts/loop-automation.md"
+  ".agents/prompts/maintenance-loop.md"
+  ".agents/guides/code-review.md"
+  ".agents/guides/linter.md"
 )
 
 has_optional_bundle=0
@@ -457,14 +457,14 @@ if [[ "$has_optional_bundle" -eq 1 ]]; then
   done
 
   for pattern in "issue-standard-workflow.md" "loop-codex.md" "loop-automation.md" "maintenance-loop.md"; do
-    if ! rg -Fq "$pattern" ".agent/prompts/README.md"; then
-      echo ".agent/prompts/README.md missing prompt reference: $pattern" >&2
+    if ! rg -Fq "$pattern" ".agents/prompts/README.md"; then
+      echo ".agents/prompts/README.md missing prompt reference: $pattern" >&2
       exit 1
     fi
   done
 
-  if ! rg -Fq "docs/harness/project-constraints.md" ".agent/guides/linter.md"; then
-    echo ".agent/guides/linter.md should point project-level mechanical constraints back to docs/harness/project-constraints.md" >&2
+  if ! rg -Fq "docs/harness/project-constraints.md" ".agents/guides/linter.md"; then
+    echo ".agents/guides/linter.md should point project-level mechanical constraints back to docs/harness/project-constraints.md" >&2
     exit 1
   fi
 
@@ -491,8 +491,8 @@ if [[ "$has_optional_bundle" -eq 1 ]]; then
     )
 
     for pattern in "${required_issue_workflow_patterns[@]}"; do
-      if ! rg -Fq "$pattern" ".agent/prompts/issue-standard-workflow.md"; then
-        echo ".agent/prompts/issue-standard-workflow.md missing required pattern: $pattern" >&2
+      if ! rg -Fq "$pattern" ".agents/prompts/issue-standard-workflow.md"; then
+        echo ".agents/prompts/issue-standard-workflow.md missing required pattern: $pattern" >&2
         exit 1
       fi
     done
@@ -513,8 +513,8 @@ if [[ "$has_optional_bundle" -eq 1 ]]; then
     )
 
     for pattern in "${required_maintenance_patterns[@]}"; do
-      if ! rg -Fq "$pattern" ".agent/prompts/maintenance-loop.md"; then
-        echo ".agent/prompts/maintenance-loop.md missing required pattern: $pattern" >&2
+      if ! rg -Fq "$pattern" ".agents/prompts/maintenance-loop.md"; then
+        echo ".agents/prompts/maintenance-loop.md missing required pattern: $pattern" >&2
         exit 1
       fi
     done
