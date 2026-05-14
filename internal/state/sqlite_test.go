@@ -387,6 +387,100 @@ func TestSQLiteStoreLatestRunForIssue(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreQueryRunRuntimeSeconds(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runningStarted := time.Now().Add(-2 * time.Minute).UTC()
+	running := Run{
+		ID:        "run-running-runtime",
+		IssueID:   "issue-running-runtime",
+		IssueKey:  "TOO-RUNNING",
+		StartedAt: runningStarted,
+	}
+	if err := store.ClaimRun(ctx, running, runningStarted.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun(running) error = %v", err)
+	}
+
+	completedStarted := time.Date(2026, 5, 14, 8, 0, 0, 0, time.UTC)
+	completedFinished := completedStarted.Add(2 * time.Minute)
+	completed := Run{
+		ID:        "run-completed-runtime",
+		IssueID:   "issue-completed-runtime",
+		IssueKey:  "TOO-COMPLETED",
+		StartedAt: completedStarted,
+	}
+	if err := store.ClaimRun(ctx, completed, completedStarted.Add(5*time.Minute)); err != nil {
+		t.Fatalf("ClaimRun(completed) error = %v", err)
+	}
+	if err := store.CompleteRun(ctx, completed.ID, RunStatusCompleted, completedFinished, ""); err != nil {
+		t.Fatalf("CompleteRun(completed) error = %v", err)
+	}
+
+	runningPage, err := store.QueryRuns(ctx, observability.RunQuery{
+		Statuses: []string{observability.RunStatusRunning},
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("QueryRuns(running) error = %v", err)
+	}
+	if len(runningPage.Rows) != 1 {
+		t.Fatalf("running rows = %#v, want one row", runningPage.Rows)
+	}
+	if runningPage.Rows[0].RuntimeSeconds <= 0 {
+		t.Fatalf("running RuntimeSeconds = %v, want > 0", runningPage.Rows[0].RuntimeSeconds)
+	}
+
+	runningDetail, err := store.GetRun(ctx, running.ID)
+	if err != nil {
+		t.Fatalf("GetRun(running) error = %v", err)
+	}
+	if runningDetail.Metadata.RuntimeSeconds <= 0 {
+		t.Fatalf("running detail RuntimeSeconds = %v, want > 0", runningDetail.Metadata.RuntimeSeconds)
+	}
+
+	latestRunning, err := store.LatestRunForIssue(ctx, "TOO-RUNNING")
+	if err != nil {
+		t.Fatalf("LatestRunForIssue(running) error = %v", err)
+	}
+	if latestRunning.Metadata.RuntimeSeconds <= 0 {
+		t.Fatalf("latest running RuntimeSeconds = %v, want > 0", latestRunning.Metadata.RuntimeSeconds)
+	}
+
+	completedDetail, err := store.GetRun(ctx, completed.ID)
+	if err != nil {
+		t.Fatalf("GetRun(completed) error = %v", err)
+	}
+	if completedDetail.Metadata.RuntimeSeconds != 120 {
+		t.Fatalf("completed RuntimeSeconds = %v, want 120", completedDetail.Metadata.RuntimeSeconds)
+	}
+
+	summary, err := store.StateSummary(ctx, 5)
+	if err != nil {
+		t.Fatalf("StateSummary() error = %v", err)
+	}
+	if summary.Runtime.TotalSeconds != 120 {
+		t.Fatalf("summary Runtime.TotalSeconds = %v, want only finished runtime 120", summary.Runtime.TotalSeconds)
+	}
+}
+
+func TestActiveRuntimeSecondsGuardsFutureClock(t *testing.T) {
+	started := time.Date(2026, 5, 14, 8, 0, 0, 0, time.UTC)
+	if got := activeRuntimeSeconds(started, started.Add(-time.Second)); got != 0 {
+		t.Fatalf("activeRuntimeSeconds(future start) = %v, want 0", got)
+	}
+	if got := activeRuntimeSeconds(time.Time{}, started); got != 0 {
+		t.Fatalf("activeRuntimeSeconds(zero start) = %v, want 0", got)
+	}
+	if got := activeRuntimeSeconds(started, started.Add(90*time.Second)); got != 90 {
+		t.Fatalf("activeRuntimeSeconds(active) = %v, want 90", got)
+	}
+}
+
 func TestOpenSQLiteStoreRejectsCorruptDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	if err := os.WriteFile(path, []byte("not a sqlite database"), 0o644); err != nil {

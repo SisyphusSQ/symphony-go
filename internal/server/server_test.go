@@ -114,6 +114,13 @@ func TestHandlerServesDashboardForBrowserRunDetailRoute(t *testing.T) {
 	}
 	handler := NewHandler(runtime, Config{DashboardFS: dashboardFixture()})
 
+	runsRefresh := serveRequest(t, handler, http.MethodGet, "/runs", "text/html")
+	assertRecorder(t, runsRefresh, http.StatusOK, `id="app"`)
+	assertHeaderContains(t, runsRefresh, "Content-Type", "text/html")
+
+	assertStatus(t, handler, http.MethodGet, "/runs", http.StatusOK, `"running":1`)
+	assertStatus(t, handler, http.MethodGet, "/api/v1/runs", http.StatusOK, `"rows":[`)
+
 	browserRefresh := serveRequest(t, handler, http.MethodGet, "/runs/TOO-1", "text/html")
 	assertRecorder(t, browserRefresh, http.StatusOK, `id="app"`)
 	assertHeaderContains(t, browserRefresh, "Content-Type", "text/html")
