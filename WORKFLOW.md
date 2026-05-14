@@ -89,6 +89,9 @@ Title: {{ issue.title }}
 Description:
 {{ issue.description }}
 
+Discussion (bounded JSON, including top-level comments and replies):
+{{ issue.comments }}
+
 ## Mission
 
 Implement the Go version of Symphony in this repository.

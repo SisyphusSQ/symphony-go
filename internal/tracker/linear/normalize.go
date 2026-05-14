@@ -35,18 +35,19 @@ type pageInfo struct {
 }
 
 type issueNode struct {
-	ID               string          `json:"id"`
-	Identifier       string          `json:"identifier"`
-	Title            string          `json:"title"`
-	Description      string          `json:"description"`
-	Priority         json.RawMessage `json:"priority"`
-	State            stateNode       `json:"state"`
-	BranchName       string          `json:"branchName"`
-	URL              string          `json:"url"`
-	Labels           labelConnection `json:"labels"`
-	InverseRelations relationConn    `json:"inverseRelations"`
-	CreatedAt        string          `json:"createdAt"`
-	UpdatedAt        string          `json:"updatedAt"`
+	ID               string            `json:"id"`
+	Identifier       string            `json:"identifier"`
+	Title            string            `json:"title"`
+	Description      string            `json:"description"`
+	Priority         json.RawMessage   `json:"priority"`
+	State            stateNode         `json:"state"`
+	BranchName       string            `json:"branchName"`
+	URL              string            `json:"url"`
+	Labels           labelConnection   `json:"labels"`
+	InverseRelations relationConn      `json:"inverseRelations"`
+	Comments         commentConnection `json:"comments"`
+	CreatedAt        string            `json:"createdAt"`
+	UpdatedAt        string            `json:"updatedAt"`
 }
 
 type stateNode struct {
@@ -104,6 +105,10 @@ func normalizeIssue(node issueNode) (tracker.Issue, error) {
 	if err != nil {
 		return tracker.Issue{}, err
 	}
+	comments, err := normalizeComments(node.Comments.Nodes)
+	if err != nil {
+		return tracker.Issue{}, err
+	}
 
 	return tracker.Issue{
 		ID:          node.ID,
@@ -116,9 +121,26 @@ func normalizeIssue(node issueNode) (tracker.Issue, error) {
 		URL:         node.URL,
 		Labels:      normalizeLabels(node.Labels.Nodes),
 		BlockedBy:   normalizeBlockers(node.InverseRelations.Nodes),
+		Comments:    trackerIssueComments(comments),
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}, nil
+}
+
+func trackerIssueComments(comments []IssueComment) []tracker.IssueComment {
+	result := make([]tracker.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		result = append(result, tracker.IssueComment{
+			ID:           comment.ID,
+			Body:         comment.Body,
+			ParentID:     comment.ParentID,
+			ThreadRootID: comment.ThreadRootID,
+			Depth:        comment.Depth,
+			CreatedAt:    comment.CreatedAt,
+			UpdatedAt:    comment.UpdatedAt,
+		})
+	}
+	return result
 }
 
 func parseOptionalTime(value string, field string) (*time.Time, error) {

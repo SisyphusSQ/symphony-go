@@ -37,6 +37,10 @@ func TestIssueRunnerRendersStrictPromptWithIssueAndAttempt(t *testing.T) {
 				Identifier: "TOO-126",
 				State:      "Done",
 			}},
+			Comments: []tracker.IssueComment{
+				{ID: "comment-root", Body: "top-level discussion", ThreadRootID: "comment-root"},
+				{ID: "comment-reply", Body: "reply discussion", ParentID: "comment-root", ThreadRootID: "comment-root", Depth: 1},
+			},
 		},
 		Attempt:       &attempt,
 		WorkspacePath: workspace,
@@ -46,6 +50,7 @@ func TestIssueRunnerRendersStrictPromptWithIssueAndAttempt(t *testing.T) {
 			"Description {{ issue.description }}",
 			"Labels {{ issue.labels }}",
 			"Blockers {{ issue.blocked_by }}",
+			"Comments {{ issue.comments }}",
 			"Attempt {{ attempt }}",
 		}, "\n"),
 		MaxTurns: 1,
@@ -71,6 +76,8 @@ func TestIssueRunnerRendersStrictPromptWithIssueAndAttempt(t *testing.T) {
 		"Description Render prompt",
 		`Labels ["runner","codex"]`,
 		`"identifier":"TOO-126"`,
+		`"parent_id":"comment-root"`,
+		`"is_reply":true`,
 		"Attempt 2",
 	} {
 		if !strings.Contains(prompt, want) {

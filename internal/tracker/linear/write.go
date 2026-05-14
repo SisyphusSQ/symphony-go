@@ -10,29 +10,39 @@ import (
 )
 
 var (
-	ErrMissingIssueID        = errors.New("missing_issue_id")
-	ErrMissingCommentID      = errors.New("missing_comment_id")
-	ErrMissingCommentBody    = errors.New("missing_comment_body")
-	ErrMissingWorkpadHeading = errors.New("missing_workpad_heading")
-	ErrMissingState          = errors.New("missing_issue_state")
-	ErrStateNotFound         = errors.New("linear_state_not_found")
-	ErrIssueNotFound         = errors.New("linear_issue_not_found")
-	ErrMissingAttachmentURL  = errors.New("missing_attachment_url")
-	ErrInvalidAttachmentURL  = errors.New("invalid_attachment_url")
-	ErrMutationUnsuccessful  = errors.New("linear_mutation_unsuccessful")
+	ErrMissingIssueID         = errors.New("missing_issue_id")
+	ErrMissingCommentID       = errors.New("missing_comment_id")
+	ErrMissingParentCommentID = errors.New("missing_parent_comment_id")
+	ErrMissingCommentBody     = errors.New("missing_comment_body")
+	ErrMissingWorkpadHeading  = errors.New("missing_workpad_heading")
+	ErrMissingState           = errors.New("missing_issue_state")
+	ErrStateNotFound          = errors.New("linear_state_not_found")
+	ErrIssueNotFound          = errors.New("linear_issue_not_found")
+	ErrMissingAttachmentURL   = errors.New("missing_attachment_url")
+	ErrInvalidAttachmentURL   = errors.New("invalid_attachment_url")
+	ErrMutationUnsuccessful   = errors.New("linear_mutation_unsuccessful")
 )
 
 // IssueComment is the typed result returned by Linear comment write operations.
 type IssueComment struct {
-	ID        string
-	Body      string
-	CreatedAt *time.Time
-	UpdatedAt *time.Time
+	ID           string
+	Body         string
+	ParentID     string
+	ThreadRootID string
+	Depth        int
+	CreatedAt    *time.Time
+	UpdatedAt    *time.Time
 }
 
 type IssueCommentCreateInput struct {
 	IssueID string
 	Body    string
+}
+
+type IssueCommentReplyCreateInput struct {
+	IssueID         string
+	ParentCommentID string
+	Body            string
 }
 
 type IssueCommentUpdateInput struct {
@@ -105,6 +115,33 @@ func (c *Client) CreateIssueComment(ctx context.Context, input IssueCommentCreat
 	return normalizeCommentPayload(response.Data, "commentCreate")
 }
 
+// CreateIssueCommentReply creates a Linear reply under a parent issue comment.
+func (c *Client) CreateIssueCommentReply(ctx context.Context, input IssueCommentReplyCreateInput) (IssueComment, error) {
+	issueID := strings.TrimSpace(input.IssueID)
+	parentCommentID := strings.TrimSpace(input.ParentCommentID)
+	body := strings.TrimSpace(input.Body)
+	if issueID == "" {
+		return IssueComment{}, ErrMissingIssueID
+	}
+	if parentCommentID == "" {
+		return IssueComment{}, ErrMissingParentCommentID
+	}
+	if body == "" {
+		return IssueComment{}, ErrMissingCommentBody
+	}
+
+	var response commentCreateResponse
+	err := c.post(ctx, commentReplyCreateMutation, map[string]any{
+		"issueID":         issueID,
+		"parentCommentID": parentCommentID,
+		"body":            input.Body,
+	}, &response)
+	if err != nil {
+		return IssueComment{}, err
+	}
+	return normalizeCommentPayload(response.Data, "commentCreate")
+}
+
 // UpdateIssueComment updates an existing Linear comment through a typed API.
 func (c *Client) UpdateIssueComment(ctx context.Context, input IssueCommentUpdateInput) (IssueComment, error) {
 	commentID := strings.TrimSpace(input.CommentID)
@@ -142,7 +179,7 @@ func (c *Client) UpsertIssueWorkpad(ctx context.Context, input WorkpadUpsertInpu
 		return WorkpadUpsertResult{}, ErrMissingCommentBody
 	}
 
-	comments, err := c.fetchIssueComments(ctx, issueID)
+	comments, err := c.FetchIssueComments(ctx, issueID)
 	if err != nil {
 		return WorkpadUpsertResult{}, err
 	}
@@ -167,6 +204,15 @@ func (c *Client) UpsertIssueWorkpad(ctx context.Context, input WorkpadUpsertInpu
 		return WorkpadUpsertResult{}, err
 	}
 	return WorkpadUpsertResult{Comment: comment, Created: true}, nil
+}
+
+// FetchIssueComments reads a bounded Linear issue discussion with reply metadata.
+func (c *Client) FetchIssueComments(ctx context.Context, issueID string) ([]IssueComment, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return nil, ErrMissingIssueID
+	}
+	return c.fetchIssueComments(ctx, issueID)
 }
 
 // TransitionIssueState moves an issue to a target Linear workflow state.
@@ -333,16 +379,46 @@ func normalizeCommentPayload(data *commentMutationData, field string) (IssueComm
 func normalizeComments(nodes []commentNode) ([]IssueComment, error) {
 	comments := make([]IssueComment, 0, len(nodes))
 	for _, node := range nodes {
-		comment, err := normalizeComment(node)
+		threadComments, err := normalizeCommentThread(node, "", "", 0)
 		if err != nil {
 			return nil, err
 		}
-		comments = append(comments, comment)
+		comments = append(comments, threadComments...)
 	}
 	return comments, nil
 }
 
 func normalizeComment(node commentNode) (IssueComment, error) {
+	return normalizeCommentInThread(node, "", "", 0)
+}
+
+func normalizeCommentThread(
+	node commentNode,
+	fallbackParentID string,
+	threadRootID string,
+	depth int,
+) ([]IssueComment, error) {
+	comment, err := normalizeCommentInThread(node, fallbackParentID, threadRootID, depth)
+	if err != nil {
+		return nil, err
+	}
+	comments := []IssueComment{comment}
+	for _, child := range node.Children.Nodes {
+		childComments, err := normalizeCommentThread(child, comment.ID, comment.ThreadRootID, comment.Depth+1)
+		if err != nil {
+			return nil, err
+		}
+		comments = append(comments, childComments...)
+	}
+	return comments, nil
+}
+
+func normalizeCommentInThread(
+	node commentNode,
+	fallbackParentID string,
+	threadRootID string,
+	depth int,
+) (IssueComment, error) {
 	if node.ID == "" {
 		return IssueComment{}, fmt.Errorf("%w: comment requires id", ErrUnknownPayload)
 	}
@@ -354,11 +430,26 @@ func normalizeComment(node commentNode) (IssueComment, error) {
 	if err != nil {
 		return IssueComment{}, err
 	}
+
+	parentID := firstNonEmptyString(node.ParentID, node.Parent.ID, fallbackParentID)
+	if parentID != "" && depth == 0 {
+		depth = 1
+	}
+	if threadRootID == "" {
+		if parentID != "" {
+			threadRootID = parentID
+		} else {
+			threadRootID = node.ID
+		}
+	}
 	return IssueComment{
-		ID:        node.ID,
-		Body:      node.Body,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+		ID:           node.ID,
+		Body:         node.Body,
+		ParentID:     parentID,
+		ThreadRootID: threadRootID,
+		Depth:        depth,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
 	}, nil
 }
 
@@ -366,6 +457,9 @@ func newestCommentWithHeading(comments []IssueComment, heading string) (IssueCom
 	var selected IssueComment
 	matched := 0
 	for _, comment := range comments {
+		if comment.ParentID != "" || comment.Depth > 0 {
+			continue
+		}
 		if !commentHasHeading(comment.Body, heading) {
 			continue
 		}
@@ -394,6 +488,15 @@ func commentTimestamp(comment IssueComment) time.Time {
 		return *comment.CreatedAt
 	}
 	return time.Time{}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func validateAttachmentURL(value string) error {
@@ -442,10 +545,17 @@ type commentConnection struct {
 }
 
 type commentNode struct {
-	ID        string `json:"id"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	ID        string            `json:"id"`
+	Body      string            `json:"body"`
+	ParentID  string            `json:"parentId"`
+	Parent    commentParentNode `json:"parent"`
+	Children  commentConnection `json:"children"`
+	CreatedAt string            `json:"createdAt"`
+	UpdatedAt string            `json:"updatedAt"`
+}
+
+type commentParentNode struct {
+	ID string `json:"id"`
 }
 
 type issueTeamStatesResponse struct {
@@ -510,7 +620,17 @@ const commentCreateMutation = `
 mutation CreateIssueComment($issueID: String!, $body: String!) {
   commentCreate(input: { issueId: $issueID, body: $body }) {
     success
-    comment { id body createdAt updatedAt }
+    comment { id body parentId parent { id } createdAt updatedAt }
+  }
+}`
+
+// Linear GraphQL schema introspection on 2026-05-14 confirmed
+// CommentCreateInput.parentId plus Comment.parentId/parent/children support.
+const commentReplyCreateMutation = `
+mutation CreateIssueCommentReply($issueID: String!, $parentCommentID: String!, $body: String!) {
+  commentCreate(input: { issueId: $issueID, parentId: $parentCommentID, body: $body }) {
+    success
+    comment { id body parentId parent { id } createdAt updatedAt }
   }
 }`
 
@@ -518,7 +638,7 @@ const commentUpdateMutation = `
 mutation UpdateIssueComment($commentID: String!, $body: String!) {
   commentUpdate(id: $commentID, input: { body: $body }) {
     success
-    comment { id body createdAt updatedAt }
+    comment { id body parentId parent { id } createdAt updatedAt }
   }
 }`
 
@@ -527,7 +647,18 @@ query IssueComments($issueID: String!, $first: Int!, $after: String) {
   issue(id: $issueID) {
     id
     comments(first: $first, after: $after) {
-      nodes { id body createdAt updatedAt }
+      nodes {
+        id
+        body
+        parentId
+        parent { id }
+        createdAt
+        updatedAt
+        children(first: 20) {
+          nodes { id body parentId parent { id } createdAt updatedAt }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
       pageInfo { hasNextPage endCursor }
     }
   }
