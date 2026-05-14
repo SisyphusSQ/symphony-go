@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/SisyphusSQ/symphony-go/internal/observability"
 )
@@ -536,6 +537,8 @@ func scanRunRow(rows *sql.Rows) (observability.RunRow, error) {
 		row.FinishedAt = &finishedAt
 		row.RuntimeSeconds = finishedAt.Sub(startedAt).Seconds()
 		row.SortAt = finishedAt
+	} else if row.Status == string(RunStatusRunning) {
+		row.RuntimeSeconds = activeRuntimeSeconds(startedAt, time.Now())
 	}
 	if retryDue.Valid && retryDue.String != "" {
 		dueAt, err := parseTime(retryDue.String)
@@ -550,6 +553,13 @@ func scanRunRow(rows *sql.Rows) (observability.RunRow, error) {
 		}
 	}
 	return row, nil
+}
+
+func activeRuntimeSeconds(startedAt time.Time, now time.Time) float64 {
+	if startedAt.IsZero() || now.Before(startedAt) {
+		return 0
+	}
+	return now.Sub(startedAt).Seconds()
 }
 
 func (s *SQLiteStore) latestEventSummary(ctx context.Context, runID string) (*observability.EventSummary, error) {

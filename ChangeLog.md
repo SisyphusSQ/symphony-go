@@ -1,5 +1,8 @@
 ## Unreleased
 
+#### bugFix:
+1. [TOO-151] 修复 Operator Console running run detail/runtime 读模型与 /runs 深链刷新视图漂移，保持 legacy /runs JSON 和 attempt #0 语义兼容。
+
 ### v1.0.0(20260513)
 #### feature:
 1. [TOO-116] 完善 CLI workflow 路径校验，支持 validate 与 run preflight 识别 positional、--workflow 和默认 ./WORKFLOW.md 路径。
