@@ -66,7 +66,7 @@ const props = defineProps<{
   client?: OperatorApiClient;
 }>();
 
-const activeView = ref<AdminView>("dashboard");
+const activeView = ref<AdminView>(initialActiveView());
 
 const {
   state,
@@ -84,6 +84,7 @@ const {
   filters,
   loadDashboard,
   selectRun,
+  clearDetailRouteState,
   updateFilters,
 } = useDashboardData(props.client);
 
@@ -101,6 +102,8 @@ const title = computed(() => {
 
 function navigate(view: ShellView) {
   activeView.value = view;
+  clearDetailRouteState();
+  replaceAdminLocation(view);
 }
 
 function openRunDetail(runID: string) {
@@ -110,10 +113,42 @@ function openRunDetail(runID: string) {
 
 function handleFilterSubmit(nextFilters: RunFilters) {
   activeView.value = "runs";
+  clearDetailRouteState();
+  replaceAdminLocation("runs");
   void updateFilters(nextFilters);
 }
 
 onMounted(() => {
   void loadDashboard();
 });
+
+function initialActiveView(): AdminView {
+  if (typeof window === "undefined") {
+    return "dashboard";
+  }
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("run_id")) {
+    return "run-detail";
+  }
+  const pathname = window.location.pathname;
+  if (pathname === "/runs" || pathname === "/runs/") {
+    return "runs";
+  }
+  if (/^\/runs\/[^/]+\/?$/.test(pathname)) {
+    return "run-detail";
+  }
+  return "dashboard";
+}
+
+function replaceAdminLocation(view: ShellView) {
+  if (typeof window === "undefined" || !window.history?.replaceState) {
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.pathname = view === "runs" ? "/runs" : "/";
+  url.searchParams.delete("run_id");
+  url.searchParams.delete("event_id");
+  url.searchParams.delete("category");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 </script>

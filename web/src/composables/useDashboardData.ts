@@ -38,6 +38,10 @@ export interface DashboardLoadState {
   eventFilters: RunEventFilters;
 }
 
+interface SelectRunOptions {
+  syncLocation?: boolean;
+}
+
 export function createDefaultOperatorClient(): OperatorApiClient {
   return createFetchOperatorApiClient();
 }
@@ -60,6 +64,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
   const filters = ref<RunFilters>({ ...defaultRunFilters });
   const eventFilters = ref<RunEventFilters>(initialEventFilters());
   const requestedEventID = ref(initialSelection().eventID);
+  const shouldSyncSelectedEventID = ref(requestedEventID.value !== "");
   let detailRequestID = 0;
 
   const runs = computed(() => runsPage.value?.rows ?? []);
@@ -98,7 +103,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
         ? selectedRunID.value
         : routeRunID || runs.value[0]?.run_id || "";
       if (nextSelection) {
-        await selectRun(nextSelection);
+        await selectRun(nextSelection, { syncLocation: nextSelection === routeRunID });
       } else {
         selectedRunID.value = "";
         selectedDetail.value = null;
@@ -118,19 +123,26 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     }
   }
 
-  async function selectRun(runID: string) {
+  async function selectRun(runID: string, options: SelectRunOptions = {}) {
+    const syncSelectionLocation = options.syncLocation ?? true;
     const cleanRunID = runID.trim();
+    if (cleanRunID !== initialSelection().runID) {
+      requestedEventID.value = "";
+    }
     const requestID = ++detailRequestID;
     selectedRunID.value = cleanRunID;
     selectedDetail.value = null;
     eventsPage.value = null;
     selectedEventID.value = "";
+    shouldSyncSelectedEventID.value = requestedEventID.value !== "";
     detailError.value = "";
     eventsError.value = "";
     if (!cleanRunID) {
       detailLoading.value = false;
       eventsLoading.value = false;
-      syncLocation();
+      if (syncSelectionLocation) {
+        syncLocation();
+      }
       return;
     }
     detailLoading.value = true;
@@ -164,7 +176,9 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
       } else {
         eventsError.value = errorMessage(eventsResult.reason);
       }
-      syncLocation();
+      if (syncSelectionLocation) {
+        syncLocation();
+      }
     } finally {
       if (requestID === detailRequestID) {
         detailLoading.value = false;
@@ -182,6 +196,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     eventsError.value = "";
     eventsPage.value = null;
     selectedEventID.value = "";
+    shouldSyncSelectedEventID.value = requestedEventID.value !== "";
     if (!cleanRunID) {
       syncLocation();
       return;
@@ -210,6 +225,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
   function updateEventCategory(category: TimelineCategoryFilter) {
     const safeCategory = category === "all" || isTimelineCategory(category) ? category : "all";
     requestedEventID.value = "";
+    shouldSyncSelectedEventID.value = false;
     return loadRunEvents(selectedRunID.value, {
       ...eventFilters.value,
       category: safeCategory,
@@ -219,7 +235,18 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
   function selectEvent(eventID: string) {
     selectedEventID.value = eventID;
     requestedEventID.value = eventID;
+    shouldSyncSelectedEventID.value = eventID !== "";
     syncLocation();
+  }
+
+  function clearDetailRouteState() {
+    requestedEventID.value = "";
+    selectedEventID.value = "";
+    shouldSyncSelectedEventID.value = false;
+    eventFilters.value = {
+      ...eventFilters.value,
+      category: "all",
+    };
   }
 
   function updateFilters(nextFilters: RunFilters) {
@@ -230,6 +257,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     const requested = requestedEventID.value;
     const visibleRequested = timelineEvents.value.find((event) => event.id === requested);
     selectedEventID.value = visibleRequested?.id || timelineEvents.value[0]?.id || "";
+    shouldSyncSelectedEventID.value = Boolean(visibleRequested?.id);
     requestedEventID.value = "";
   }
 
@@ -240,12 +268,12 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     const url = new URL(window.location.href);
     if (selectedRunID.value) {
       url.pathname = `/runs/${encodeURIComponent(selectedRunID.value)}`;
-      url.searchParams.set("run_id", selectedRunID.value);
+      url.searchParams.delete("run_id");
     } else {
       url.pathname = "/";
       url.searchParams.delete("run_id");
     }
-    if (selectedEventID.value) {
+    if (shouldSyncSelectedEventID.value && selectedEventID.value) {
       url.searchParams.set("event_id", selectedEventID.value);
     } else {
       url.searchParams.delete("event_id");
@@ -282,6 +310,7 @@ export function useDashboardData(client: OperatorApiClient = createDefaultOperat
     loadRunEvents,
     selectRun,
     selectEvent,
+    clearDetailRouteState,
     updateFilters,
     updateEventCategory,
   };
@@ -292,7 +321,7 @@ function initialSelection(): { runID: string; eventID: string } {
     return { runID: "", eventID: "" };
   }
   const params = new URLSearchParams(window.location.search);
-  const pathMatch = window.location.pathname.match(/^\/runs\/([^/]+)$/);
+  const pathMatch = window.location.pathname.match(/^\/runs\/([^/]+)\/?$/);
   return {
     runID: params.get("run_id") || (pathMatch ? decodeURIComponent(pathMatch[1]) : ""),
     eventID: params.get("event_id") || "",

@@ -331,6 +331,21 @@ query FetchIssuesByStates($projectSlug: String!, $stateNames: [String!]!, $after
           }
         }
       }
+      comments(first: 20) {
+        nodes {
+          id
+          body
+          parentId
+          parent { id }
+          createdAt
+          updatedAt
+          children(first: 20) {
+            nodes { id body parentId parent { id } createdAt updatedAt }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -360,6 +375,21 @@ query RefreshIssueStates($ids: [ID!]!, $first: Int!) {
             state { name }
           }
         }
+      }
+      comments(first: 20) {
+        nodes {
+          id
+          body
+          parentId
+          parent { id }
+          createdAt
+          updatedAt
+          children(first: 20) {
+            nodes { id body parentId parent { id } createdAt updatedAt }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
       }
     }
     pageInfo { hasNextPage endCursor }

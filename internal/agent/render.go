@@ -18,6 +18,11 @@ var (
 
 var interpolationPattern = regexp.MustCompile(`{{\s*([^{}]+?)\s*}}`)
 
+const (
+	maxPromptIssueComments         = 50
+	maxPromptIssueCommentBodyRunes = 4000
+)
+
 // TemplateError reports strict prompt rendering failures.
 type TemplateError struct {
 	Kind       error
@@ -150,7 +155,14 @@ func issueTemplateData(issue tracker.Issue) map[string]any {
 		"labels":      append([]string(nil), issue.Labels...),
 		"blocked_by":  blockerData(issue.BlockedBy),
 		"blockedBy":   blockerData(issue.BlockedBy),
+		"comments":    commentData(issue.Comments),
 	}
+	omittedComments := len(issue.Comments) - maxPromptIssueComments
+	if omittedComments < 0 {
+		omittedComments = 0
+	}
+	data["comments_omitted"] = omittedComments
+	data["commentsOmitted"] = omittedComments
 	if issue.Priority != nil {
 		data["priority"] = *issue.Priority
 	} else {
@@ -173,6 +185,58 @@ func issueTemplateData(issue tracker.Issue) map[string]any {
 		data["updatedAt"] = nil
 	}
 	return data
+}
+
+func commentData(comments []tracker.IssueComment) []map[string]any {
+	limit := len(comments)
+	if limit > maxPromptIssueComments {
+		limit = maxPromptIssueComments
+	}
+	result := make([]map[string]any, 0, limit)
+	for _, comment := range comments[:limit] {
+		body, truncated := truncateRunes(comment.Body, maxPromptIssueCommentBodyRunes)
+		item := map[string]any{
+			"id":             comment.ID,
+			"body":           body,
+			"parent_id":      comment.ParentID,
+			"parentId":       comment.ParentID,
+			"thread_root_id": comment.ThreadRootID,
+			"threadRootId":   comment.ThreadRootID,
+			"depth":          comment.Depth,
+			"is_reply":       comment.ParentID != "" || comment.Depth > 0,
+			"isReply":        comment.ParentID != "" || comment.Depth > 0,
+			"truncated":      truncated,
+		}
+		if comment.CreatedAt != nil {
+			created := comment.CreatedAt.UTC().Format(time.RFC3339)
+			item["created_at"] = created
+			item["createdAt"] = created
+		} else {
+			item["created_at"] = nil
+			item["createdAt"] = nil
+		}
+		if comment.UpdatedAt != nil {
+			updated := comment.UpdatedAt.UTC().Format(time.RFC3339)
+			item["updated_at"] = updated
+			item["updatedAt"] = updated
+		} else {
+			item["updated_at"] = nil
+			item["updatedAt"] = nil
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func truncateRunes(value string, limit int) (string, bool) {
+	if limit <= 0 {
+		return "", value != ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value, false
+	}
+	return string(runes[:limit]) + "\n[truncated]", true
 }
 
 func blockerData(blockers []tracker.BlockerRef) []map[string]any {

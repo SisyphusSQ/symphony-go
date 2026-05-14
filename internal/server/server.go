@@ -224,6 +224,9 @@ func (h *handler) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
+	if acceptsDashboardHTML(r) && h.serveDashboard(w, r) {
+		return
+	}
 	if h.runtime == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "runtime is unavailable")
 		return
