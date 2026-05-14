@@ -94,6 +94,55 @@ func TestCreateAndUpdateIssueComment(t *testing.T) {
 	}
 }
 
+func TestCreateIssueCommentReply(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := captureRequest(t, r)
+		assertQueryContains(t, request.Query, "mutation CreateIssueCommentReply")
+		assertQueryContains(t, request.Query, "parentId: $parentCommentID")
+		if request.Variables["issueID"] != "issue-1" {
+			t.Fatalf("issueID = %#v", request.Variables["issueID"])
+		}
+		if request.Variables["parentCommentID"] != "comment-parent" {
+			t.Fatalf("parentCommentID = %#v", request.Variables["parentCommentID"])
+		}
+		if request.Variables["body"] != "reply body" {
+			t.Fatalf("body = %#v", request.Variables["body"])
+		}
+		writeJSON(w, map[string]any{
+			"data": map[string]any{
+				"commentCreate": map[string]any{
+					"success": true,
+					"comment": map[string]any{
+						"id":        "comment-reply",
+						"body":      "reply body",
+						"parentId":  "comment-parent",
+						"parent":    map[string]any{"id": "comment-parent"},
+						"createdAt": "2026-05-14T08:00:00Z",
+						"updatedAt": "2026-05-14T08:00:00Z",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := mustClient(t, Config{Endpoint: server.URL, APIKey: "linear-token", ProjectSlug: "project"})
+	reply, err := client.CreateIssueCommentReply(context.Background(), IssueCommentReplyCreateInput{
+		IssueID:         "issue-1",
+		ParentCommentID: "comment-parent",
+		Body:            "reply body",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssueCommentReply() error = %v", err)
+	}
+	if reply.ID != "comment-reply" ||
+		reply.ParentID != "comment-parent" ||
+		reply.ThreadRootID != "comment-parent" ||
+		reply.Depth != 1 {
+		t.Fatalf("reply = %#v", reply)
+	}
+}
+
 func TestUpsertIssueWorkpadCreatesWhenMissing(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -457,6 +506,80 @@ func TestWriteAPIErrors(t *testing.T) {
 		_, err := client.UpdateIssueComment(context.Background(), IssueCommentUpdateInput{Body: "body"})
 		if !errors.Is(err, ErrMissingCommentID) {
 			t.Fatalf("error = %v, want ErrMissingCommentID", err)
+		}
+	})
+
+	t.Run("missing issue id for reply", func(t *testing.T) {
+		client := mustClient(t, Config{Endpoint: "http://127.0.0.1", APIKey: "linear-token", ProjectSlug: "project"})
+		_, err := client.CreateIssueCommentReply(context.Background(), IssueCommentReplyCreateInput{
+			ParentCommentID: "comment-parent",
+			Body:            "body",
+		})
+		if !errors.Is(err, ErrMissingIssueID) {
+			t.Fatalf("error = %v, want ErrMissingIssueID", err)
+		}
+	})
+
+	t.Run("missing parent comment id for reply", func(t *testing.T) {
+		client := mustClient(t, Config{Endpoint: "http://127.0.0.1", APIKey: "linear-token", ProjectSlug: "project"})
+		_, err := client.CreateIssueCommentReply(context.Background(), IssueCommentReplyCreateInput{
+			IssueID: "issue-1",
+			Body:    "body",
+		})
+		if !errors.Is(err, ErrMissingParentCommentID) {
+			t.Fatalf("error = %v, want ErrMissingParentCommentID", err)
+		}
+	})
+
+	t.Run("missing body for reply", func(t *testing.T) {
+		client := mustClient(t, Config{Endpoint: "http://127.0.0.1", APIKey: "linear-token", ProjectSlug: "project"})
+		_, err := client.CreateIssueCommentReply(context.Background(), IssueCommentReplyCreateInput{
+			IssueID:         "issue-1",
+			ParentCommentID: "comment-parent",
+		})
+		if !errors.Is(err, ErrMissingCommentBody) {
+			t.Fatalf("error = %v, want ErrMissingCommentBody", err)
+		}
+	})
+
+	t.Run("reply graphql error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"errors": []any{map[string]any{"message": "parent missing"}}})
+		}))
+		defer server.Close()
+
+		client := mustClient(t, Config{Endpoint: server.URL, APIKey: "linear-token", ProjectSlug: "project"})
+		_, err := client.CreateIssueCommentReply(context.Background(), IssueCommentReplyCreateInput{
+			IssueID:         "issue-1",
+			ParentCommentID: "missing-parent",
+			Body:            "body",
+		})
+		if !errors.Is(err, ErrGraphQLErrors) {
+			t.Fatalf("error = %v, want ErrGraphQLErrors", err)
+		}
+	})
+
+	t.Run("reply unknown payload", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{
+				"data": map[string]any{
+					"commentCreate": map[string]any{
+						"success": true,
+						"comment": map[string]any{"body": "body"},
+					},
+				},
+			})
+		}))
+		defer server.Close()
+
+		client := mustClient(t, Config{Endpoint: server.URL, APIKey: "linear-token", ProjectSlug: "project"})
+		_, err := client.CreateIssueCommentReply(context.Background(), IssueCommentReplyCreateInput{
+			IssueID:         "issue-1",
+			ParentCommentID: "comment-parent",
+			Body:            "body",
+		})
+		if !errors.Is(err, ErrUnknownPayload) {
+			t.Fatalf("error = %v, want ErrUnknownPayload", err)
 		}
 	})
 }

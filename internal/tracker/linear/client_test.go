@@ -27,6 +27,8 @@ func TestFetchCandidateIssuesPaginatesAndNormalizes(t *testing.T) {
 		assertQueryContains(t, request.Query, "query FetchIssuesByStates($projectSlug: String!, $stateNames: [String!]!, $after: String, $first: Int!)")
 		assertQueryContains(t, request.Query, "project: { slugId: { eq: $projectSlug } }")
 		assertQueryContains(t, request.Query, "state: { name: { in: $stateNames } }")
+		assertQueryContains(t, request.Query, "comments(first: 20)")
+		assertQueryContains(t, request.Query, "children(first: 20)")
 
 		if got := request.Variables["projectSlug"]; got != "760daeff8700" {
 			t.Fatalf("projectSlug = %v, want 760daeff8700", got)
@@ -81,6 +83,30 @@ func TestFetchCandidateIssuesPaginatesAndNormalizes(t *testing.T) {
 										},
 									},
 								}},
+								"comments": map[string]any{
+									"nodes": []any{
+										map[string]any{
+											"id":        "comment-root",
+											"body":      "top-level comment",
+											"createdAt": "2026-05-01T11:00:00Z",
+											"updatedAt": "2026-05-01T11:05:00Z",
+											"children": map[string]any{
+												"nodes": []any{
+													map[string]any{
+														"id":        "comment-reply",
+														"body":      "reply body",
+														"parentId":  "comment-root",
+														"parent":    map[string]any{"id": "comment-root"},
+														"createdAt": "2026-05-01T11:10:00Z",
+														"updatedAt": "2026-05-01T11:10:00Z",
+													},
+												},
+												"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+											},
+										},
+									},
+									"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+								},
 							},
 						},
 						"pageInfo": map[string]any{"hasNextPage": true, "endCursor": "cursor-1"},
@@ -143,6 +169,21 @@ func TestFetchCandidateIssuesPaginatesAndNormalizes(t *testing.T) {
 	wantBlockers := []tracker.BlockerRef{{ID: "blocker-1", Identifier: "TOO-0", State: "Done"}}
 	if !reflect.DeepEqual(first.BlockedBy, wantBlockers) {
 		t.Fatalf("BlockedBy = %#v", first.BlockedBy)
+	}
+	if len(first.Comments) != 2 {
+		t.Fatalf("Comments = %#v, want root comment and reply", first.Comments)
+	}
+	if first.Comments[0].ID != "comment-root" ||
+		first.Comments[0].ParentID != "" ||
+		first.Comments[0].ThreadRootID != "comment-root" ||
+		first.Comments[0].Depth != 0 {
+		t.Fatalf("root comment = %#v", first.Comments[0])
+	}
+	if first.Comments[1].ID != "comment-reply" ||
+		first.Comments[1].ParentID != "comment-root" ||
+		first.Comments[1].ThreadRootID != "comment-root" ||
+		first.Comments[1].Depth != 1 {
+		t.Fatalf("reply comment = %#v", first.Comments[1])
 	}
 	if first.CreatedAt == nil || first.CreatedAt.Format(time.RFC3339) != "2026-05-01T10:00:00Z" {
 		t.Fatalf("CreatedAt = %v", first.CreatedAt)
