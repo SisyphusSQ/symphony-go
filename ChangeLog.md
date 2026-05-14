@@ -3,6 +3,9 @@
 #### bugFix:
 1. [TOO-151] 修复 Operator Console running run detail/runtime 读模型与 /runs 深链刷新视图漂移，保持 legacy /runs JSON 和 attempt #0 语义兼容。
 
+#### note:
+1. 新增 Linear comment trigger 设计文档，并忽略本机 docs/symphony-go dogfood 运行目录，避免本机 workflow/state DB/token 痕迹进入提交。
+
 ### v1.0.0(20260513)
 #### feature:
 1. [TOO-116] 完善 CLI workflow 路径校验，支持 validate 与 run preflight 识别 positional、--workflow 和默认 ./WORKFLOW.md 路径。
