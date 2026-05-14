@@ -1,10 +1,11 @@
 ## Unreleased
 
+### v1.1.0(20260514)
+#### feature:
+1. [TOO-150] 新增 Linear issue threaded reply 支持，覆盖 parent comment 下 reply create、top-level/reply discussion 归一化、bounded prompt context 和 fake GraphQL 错误处理测试。
+
 #### bugFix:
 1. [TOO-151] 修复 Operator Console running run detail/runtime 读模型与 /runs 深链刷新视图漂移，保持 legacy /runs JSON 和 attempt #0 语义兼容。
-
-#### note:
-1. 新增 Linear comment trigger 设计文档，并忽略本机 docs/symphony-go dogfood 运行目录，避免本机 workflow/state DB/token 痕迹进入提交。
 
 ### v1.0.0(20260513)
 #### feature:
@@ -35,7 +36,6 @@
 25. [TOO-142] 新增 Vue 3 + Ant Design Vue operator Web GUI shell，覆盖 `/api/v1` state/runs/detail client、dashboard 状态栏、run list 查询、mock fixture 与前端测试/构建入口。
 26. [TOO-143] 新增 Web run detail 与 turn timeline，覆盖 `/api/v1/runs/{run_id}/events` client、timeline category filter、event detail、raw redacted JSON 展开/复制和前端验证。
 27. [TOO-144] 新增 Go operator server 生产态 Web GUI 静态资源服务，覆盖 `/` dashboard、Vite asset serving、`/api/v1/*` 优先级保护、browser history fallback 和 operator-ui smoke runbook。
-28. [TOO-150] 新增 Linear issue threaded reply 支持，覆盖 parent comment 下 reply create、top-level/reply discussion 归一化、bounded prompt context 和 fake GraphQL 错误处理测试。
 
 #### note:
 1. 新增 symphony-go 版本发布 repo-local skill，明确流程完成前必须回写 changeLog。
