@@ -24,6 +24,9 @@ temp/
 # Local Symphony runtime docs and workflow may contain machine-local tokens.
 docs/symphony/
 
+# Local Go Symphony dogfood runtime docs and workflow may contain machine-local tokens.
+docs/symphony-go/
+
 # Local dogfood credentials and machine-specific inputs.
 /docs/test/real-dogfood/secrets.env
 
